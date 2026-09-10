@@ -45,7 +45,6 @@ import io
 import json
 import logging
 import os
-import queue
 import sys
 import time
 from collections.abc import Iterator, Sequence
@@ -151,6 +150,15 @@ DATETIME_COLUMNS = [
 
 # Smallest window we are willing to request before giving up on a range.
 MIN_WINDOW_DAYS = 1
+
+# Minimum sleep between API requests (seconds) to avoid rate limiting.
+DEFAULT_MIN_INTERVAL = 2.0
+
+# Maximum number of retries with backoff before splitting a window.
+MAX_RETRIES = 3
+
+# Maximum subdivision depth to prevent infinite splitting.
+MAX_SPLIT_DEPTH = 10
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -326,18 +334,33 @@ def fetch_window(
     total_rows = 0
     total_batches = 0
 
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-        # Skip the header row on the very first line, if present.
-        if total_rows == 0 and len(batch) == 0 and first_line_is_header(line):
-            continue
-        batch.append(line)
-        if len(batch) >= batch_size:
-            total_rows += flush_batch(batch, year_dir, prefix, batch_index, year)
-            batch_index += 1
-            total_batches += 1
+    try:
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            # Skip the header row on the very first line, if present.
+            if total_rows == 0 and len(batch) == 0 and first_line_is_header(line):
+                continue
+            batch.append(line)
+            if len(batch) >= batch_size:
+                total_rows += flush_batch(batch, year_dir, prefix, batch_index, year)
+                batch_index += 1
+                total_batches += 1
+    except Exception as exc:
+        # If we already wrote some rows, the partial data is valid.
+        # Re-raise so the caller can decide whether to split.
+        if total_rows > 0:
+            LOG.warning(
+                "  Partial download: %d rows written before error: %s",
+                total_rows, exc,
+            )
+            # Write remaining batch if any.
+            if batch:
+                total_rows += flush_batch(batch, year_dir, prefix, batch_index, year)
+                total_batches += 1
+            return total_rows, total_batches
+        raise
 
     if batch:
         total_rows += flush_batch(batch, year_dir, prefix, batch_index, year)
@@ -360,6 +383,36 @@ def flush_batch(
     return len(df)
 
 
+def fetch_window_with_retries(
+    st: SpaceTrackClient,
+    start: datetime,
+    end: datetime,
+    fmt: str,
+    batch_size: int,
+    min_interval: float,
+) -> tuple[int, int]:
+    """Fetch one window with exponential-backoff retries.
+
+    Returns (rows, batches). Raises only after MAX_RETRIES failures.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(1, MAX_RETRIES + 1):
+        # Always sleep at least min_interval between requests.
+        time.sleep(min_interval)
+        try:
+            rows, batches = fetch_window(st, start, end, fmt, batch_size)
+            return rows, batches
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            backoff = min_interval * (2 ** attempt)
+            LOG.warning(
+                "  Attempt %d/%d failed: %s – retrying in %.1fs",
+                attempt, MAX_RETRIES, exc, backoff,
+            )
+            time.sleep(backoff)
+    raise last_exc  # type: ignore[misc]
+
+
 def fetch_window_with_subdivision(
     st: SpaceTrackClient,
     start: datetime,
@@ -367,69 +420,61 @@ def fetch_window_with_subdivision(
     fmt: str,
     batch_size: int,
     completed: set[str],
-    interval: float,
+    min_interval: float,
+    depth: int = 0,
 ) -> int:
     """Fetch a window, splitting it recursively when it is too large.
 
     Returns the number of rows downloaded for this top-level window.
     """
-    pending: queue.Queue[tuple[datetime, datetime]] = queue.Queue()
-    pending.put((start, end))
-    rows_total = 0
+    # Already done during a previous run?
+    key = window_key(start, end)
+    if key in completed:
+        return 0
 
-    while not pending.empty():
-        win_start, win_end = pending.get()
+    span_days = (end - start).total_seconds() / 86_400
+    LOG.info(
+        "Fetching %s -> %s (%.1f days, depth=%d)",
+        start.isoformat(), end.isoformat(), span_days, depth,
+    )
 
-        # Already done during a previous run?
-        key = window_key(win_start, win_end)
-        if key in completed:
-            continue
-
-        # Respect a voluntary pause between API requests.
-        if interval > 0:
-            time.sleep(interval)
-
-        span_days = (win_end - win_start).total_seconds() / 86_400
-        LOG.info(
-            "Fetching %s -> %s (%.1f days)",
-            win_start.isoformat(),
-            win_end.isoformat(),
-            span_days,
+    try:
+        rows, batches = fetch_window_with_retries(
+            st, start, end, fmt, batch_size, min_interval,
         )
+        completed.add(key)
+        save_progress(completed)
+        LOG.info("  OK: %d rows in %d batches", rows, batches)
+        return rows
+    except Exception as exc:  # noqa: BLE001
+        LOG.warning("  Request failed after %d retries: %s", MAX_RETRIES, exc)
 
-        try:
-            rows, batches = fetch_window(st, win_start, win_end, fmt, batch_size)
-            if batches == 0:
-                # Empty result is still a successful download.
-                completed.add(key)
-                save_progress(completed)
-            else:
-                completed.add(key)
-                save_progress(completed)
-            rows_total += rows
-        except Exception as exc:  # noqa: BLE001 - we need to catch any API failure
-            LOG.warning("  Request failed: %s", exc)
-
-            # Don't split below the minimum window size we allow.
-            too_small = span_days <= MIN_WINDOW_DAYS
-            if too_small:
-                LOG.error(
-                    "  Window too small to split (%s days); skipping.", span_days
-                )
-                continue
-
-            left, right = split_window(win_start, win_end)
-            LOG.info(
-                "  Splitting into %s -> %s and %s -> %s",
-                left[0].isoformat(),
-                left[1].isoformat(),
-                right[0].isoformat(),
-                right[1].isoformat(),
+        # Don't split below the minimum window size or max depth.
+        too_small = span_days <= MIN_WINDOW_DAYS
+        too_deep = depth >= MAX_SPLIT_DEPTH
+        if too_small or too_deep:
+            LOG.error(
+                "  Cannot split further (%s days, depth=%d); skipping window.",
+                span_days, depth,
             )
-            pending.put(left)
-            pending.put(right)
+            # Mark as completed so we don't retry on next run.
+            completed.add(key)
+            save_progress(completed)
+            return 0
 
-    return rows_total
+        left, right = split_window(start, end)
+        LOG.info(
+            "  Splitting into %s -> %s and %s -> %s",
+            left[0].isoformat(), left[1].isoformat(),
+            right[0].isoformat(), right[1].isoformat(),
+        )
+        rows_left = fetch_window_with_subdivision(
+            st, left[0], left[1], fmt, batch_size, completed, min_interval, depth + 1,
+        )
+        rows_right = fetch_window_with_subdivision(
+            st, right[0], right[1], fmt, batch_size, completed, min_interval, depth + 1,
+        )
+        return rows_left + rows_right
 
 
 # ---------------------------------------------------------------------------
@@ -474,10 +519,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Stop after this many top-level time windows (for testing).",
     )
     parser.add_argument(
-        "--interval",
+        "--min-interval",
         type=float,
-        default=0.0,
-        help="Extra sleep in seconds between API requests.",
+        default=DEFAULT_MIN_INTERVAL,
+        help="Minimum sleep in seconds between API requests (default: 2.0).",
     )
     parser.add_argument(
         "--reset",
@@ -536,7 +581,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     args.format,
                     args.batch_size,
                     completed,
-                    args.interval,
+                    args.min_interval,
                 )
                 processed += 1
 
