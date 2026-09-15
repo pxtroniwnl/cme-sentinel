@@ -14,6 +14,7 @@ elements, satellite-catalog metadata, and the raw TLE lines.
 ## Table of contents
 
 - [Why this project](#why-this-project)
+- [Next step: CME data sources](#next-step-cme-data-sources)
 - [How the data source works](#how-the-data-source-works)
 - [Requirements](#requirements)
 - [Setup](#setup)
@@ -68,6 +69,42 @@ LEO-only, payload-only, decayed objects) can be done later at query time.
 This repository currently contains a download of **67.2 million element
 sets** covering **63,762 distinct objects** across **67 years of data**
 (1960–2026), split into **455 Parquet part files** (~12 GB on disk).
+
+---
+
+## Next step: CME data sources
+
+So far this repository holds **only satellite orbital data** (an element-set
+catalog). The planned follow-up is to also source the **coronal mass ejection
+(CME)** data itself — i.e. downloading the actual CME events from one of the
+portals below (or another source with similar data). That CME catalog is what
+will let us probe whether solar eruptions measurably affect tracked objects.
+
+The candidates, with their time coverage:
+
+| Source | Covers | Content | Access format |
+|--------|--------|---------|---------------|
+| **CDAW / SOHO-LASCO CME Catalog** (`cdaw.gsfc.nasa.gov/CME_list`) | Jan **1996** → today (SOHO era, ~43k CMEs) | date/time, direction (central position angle), angular width, speed, acceleration, mass, kinetic energy, halo flag | monthly HTML; official parquet mirror in Hugging Face (`juliensimon/cdaw-lasco-cme-catalog`) |
+| **DONKI — NASA CCMC** (`api.nasa.gov/DONKI/CME`) | **~2012** → today (curated, smaller volume) | CMEs with real **3D direction** (WSA-ENLIL cone-model fits: speed, half-angle, source lat/lon) + linked events | free REST API (JSON) |
+| **CACTus** (SIDC Belgium, `sidc.be/cactus`) | **1997** → **2017** (automatic detection) | same basic LASCO parameters, useful as cross-check | web CSV |
+| **OMNI solar wind** (NASA GSFC, `omniweb.gsfc.nasa.gov`) | **1963** → today (continuous) | in-situ solar wind at L1: speed, density, IMF Bz, etc. (the "big" time series) | multi-index ASCII |
+| **Geomagnetic indices Dst / Kp / Ap** (OMNI, GFZ, NOAA) | Dst: **1957** → today; Kp: **1932** → today | geomagnetic storm strength (the causal link between CMEs and orbit drag) | ASCII |
+| **HELCATS** (STEREO, `helcats-fp7.eu`) | **2007** → **2017** | CMEs as seen by STEREO-A/B, true 3D direction | CSV / ASCII |
+
+Coverage notes that matter for the planned analysis:
+
+- A complete CME catalog only exists from **1996** (SOHO/LASCO). For the
+  1960–1995 part of the satellite archive there is no exhaustive CME catalog;
+  the continuous series that do cover it are **OMNI solar wind (1963+)** and
+  the **Dst / Kp indices (1957+ / 1932+)**.
+- CDAW's "direction" is **2D** on the plane of the sky (position angle), not a
+  3D vector. Halo CMEs (angular width = 360°) are the Earth-directed subset —
+  the basic geo-effective signal. Real 3D direction is only available from
+  **DONKI** and **HELCATS**.
+- The mechanism that connects CMEs to the satellite catalog is:
+  *CME → reaches Earth → geomagnetic storm → thermospheric heating → higher
+  atmospheric drag → orbital decay*. The TLE data can only reveal effects that
+  change the orbit (drag/decay), not electronic failures.
 
 ---
 
