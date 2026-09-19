@@ -1,20 +1,33 @@
 # CME Sentinel
 
-Download the **full historical orbital catalog** from
-[Space-Track.org](https://www.space-track.org) (the `gp_history` API class)
-and store it locally as **Apache Parquet** files partitioned by year.
+Historical **coronal mass ejection (CME) → satellite effect** research
+project: establishing, from historical records, whether solar eruptions
+measurably affect tracked objects and spacecraft — **orbital decay** via
+storm-driven atmospheric drag and **electronics failures** — as a first step
+toward **early warning** of such events.
 
-The download includes **every tracked object** (all `NORAD_CAT_ID`s) and
-**all time** from **1960-01-01 to today**, with the complete set of
-Orbit Mean-Elements Message (OMM) columns exposed by the API — orbital
-elements, satellite-catalog metadata, and the raw TLE lines.
+This repository currently holds the **full historical orbital catalog** from
+[Space-Track.org](https://www.space-track.org) (the `gp_history` API class)
+stored locally as **Apache Parquet** files partitioned by year — every tracked
+object (all `NORAD_CAT_ID`s), all time from **1960-01-01 to today**, with the
+complete set of Orbit Mean-Elements Message (OMM) columns exposed by the API
+(orbital elements, satellite-catalog metadata, and the raw TLE lines).
+
+The space-weather side of the causal chain (CME catalogs, geomagnetic
+indices, solar wind) is **planned but not yet collected** — see
+[causal study data sources](#causal-study-data-sources).
 
 ---
 
 ## Table of contents
 
 - [Why this project](#why-this-project)
-- [Next step: CME data sources](#next-step-cme-data-sources)
+- [Causal study data sources](#causal-study-data-sources)
+  - [The causal chain](#the-causal-chain)
+  - [Source comparison](#source-comparison)
+  - [ESA Anomaly Dataset (documented reference)](#esa-anomaly-dataset-documented-reference)
+  - [Satellite status & failure reason (extra layers)](#satellite-status--failure-reason-extra-layers)
+  - [Planned collection](#planned-collection)
 - [How the data source works](#how-the-data-source-works)
 - [Requirements](#requirements)
 - [Setup](#setup)
@@ -72,39 +85,104 @@ sets** covering **63,762 distinct objects** across **67 years of data**
 
 ---
 
-## Next step: CME data sources
+## Causal study data sources
 
-So far this repository holds **only satellite orbital data** (an element-set
-catalog). The planned follow-up is to also source the **coronal mass ejection
-(CME)** data itself — i.e. downloading the actual CME events from one of the
-portals below (or another source with similar data). That CME catalog is what
-will let us probe whether solar eruptions measurably affect tracked objects.
+The long-term goal of this repo is to test whether **CMEs causally affect
+tracked satellites** and, ultimately, to give **early warning**. Four families
+of data are involved; each plays a fixed role in the causal chain.
 
-The candidates, with their time coverage:
+### The causal chain
 
-| Source | Covers | Content | Access format |
-|--------|--------|---------|---------------|
-| **CDAW / SOHO-LASCO CME Catalog** (`cdaw.gsfc.nasa.gov/CME_list`) | Jan **1996** → today (SOHO era, ~43k CMEs) | date/time, direction (central position angle), angular width, speed, acceleration, mass, kinetic energy, halo flag | monthly HTML; official parquet mirror in Hugging Face (`juliensimon/cdaw-lasco-cme-catalog`) |
-| **DONKI — NASA CCMC** (`api.nasa.gov/DONKI/CME`) | **~2012** → today (curated, smaller volume) | CMEs with real **3D direction** (WSA-ENLIL cone-model fits: speed, half-angle, source lat/lon) + linked events | free REST API (JSON) |
-| **CACTus** (SIDC Belgium, `sidc.be/cactus`) | **1997** → **2017** (automatic detection) | same basic LASCO parameters, useful as cross-check | web CSV |
-| **OMNI solar wind** (NASA GSFC, `omniweb.gsfc.nasa.gov`) | **1963** → today (continuous) | in-situ solar wind at L1: speed, density, IMF Bz, etc. (the "big" time series) | multi-index ASCII |
-| **Geomagnetic indices Dst / Kp / Ap** (OMNI, GFZ, NOAA) | Dst: **1957** → today; Kp: **1932** → today | geomagnetic storm strength (the causal link between CMEs and orbit drag) | ASCII |
-| **HELCATS** (STEREO, `helcats-fp7.eu`) | **2007** → **2017** | CMEs as seen by STEREO-A/B, true 3D direction | CSV / ASCII |
+Two physically distinct pathways connect a CME at the Sun to an effect on a
+satellite:
 
-Coverage notes that matter for the planned analysis:
+| Pathway | Chain | Observable in the catalog |
+|---------|-------|---------------------------|
+| Orbit decay | CME → reaches Earth → **geomagnetic storm** (Dst ↓, Kp ↑) → **thermospheric heating / density ↑** → **drag** ↑ → **orbital decay** | `MEAN_MOTION` ↑, `PERIAPSIS` ↓, `DECAY_DATE` set (re-entry) |
+| Electronics failure | CME / SEP → **solar energetic particles** reach orbit → radiation damage, **single-event upsets** | telemetry anomalies / loss of signal (not visible in TLEs alone) |
 
-- A complete CME catalog only exists from **1996** (SOHO/LASCO). For the
-  1960–1995 part of the satellite archive there is no exhaustive CME catalog;
-  the continuous series that do cover it are **OMNI solar wind (1963+)** and
-  the **Dst / Kp indices (1957+ / 1932+)**.
-- CDAW's "direction" is **2D** on the plane of the sky (position angle), not a
-  3D vector. Halo CMEs (angular width = 360°) are the Earth-directed subset —
-  the basic geo-effective signal. Real 3D direction is only available from
-  **DONKI** and **HELCATS**.
-- The mechanism that connects CMEs to the satellite catalog is:
-  *CME → reaches Earth → geomagnetic storm → thermospheric heating → higher
-  atmospheric drag → orbital decay*. The TLE data can only reveal effects that
-  change the orbit (drag/decay), not electronic failures.
+The canonical validation case for the pipeline is the **Starlink batch lost in
+February 2022**: a CME-driven geomagnetic storm thickened the thermosphere and
+~40 Starlink satellites re-entered within days — visible in the catalog as
+clustered `DECAY_DATE`s right after a strong storm.
+
+### Source comparison
+
+| Source | Measures | Coverage | Role in the chain | Access |
+|--------|----------|----------|-------------------|--------|
+| **Space-Track `gp_history`** (already collected) | Orbital state of every object (TLE/OMM) | 1960 → today | **Effect**: drag, decay, re-entry | CSV → Parquet (this repo) |
+| **ESA Anomaly Dataset** | On-board telemetry (housekeeping) + curated anomaly labels | 3 missions, ~25.5 y (**timestamps anonymised**) | ❌ **Not usable** for correlation (see below) | Zenodo zip (~11.6 GB) |
+| **DONKI** (NASA CCMC) | Discrete space-weather events: CME (3D cone), geomagnetic storms (GST), SEP, solar flares, HSS | ≈2010/2013 → today | **Event framework**: what happened and when | REST JSON (free NASA API key) |
+| **OMNI** (NASA GSFC) | Continuous solar wind + **Dst, Kp, proton fluxes** | Hourly **1963** → today; 5-min 1995 → today | **Continuous driver** + geomagnetic response | Fixed-width ASCII, yearly files |
+
+### ESA Anomaly Dataset (documented reference)
+
+The [ESA Anomaly Dataset](https://github.com/esa/anomaly-dataset) is the first
+large-scale dataset of **real satellite telemetry** (housekeeping: currents,
+voltages, temperatures, states) with **anomaly annotations curated by ESA
+mission-operations engineers**. It was produced by Airbus Defence and Space,
+KP Labs and ESA/ESOC under the A²I roadmap.
+
+- Data: Zenodo `10.5281/zenodo.12528696` (3 zips, ~11.6 GB)
+- Paper: arXiv [`2406.17826`](https://arxiv.org/abs/2406.17826); journal
+  version [DMLR](https://data.mlr.press/assets/pdf/v03-23.pdf)
+- Benchmark code: [`kplabs-pl/ESA-ADB`](https://github.com/kplabs-pl/ESA-ADB)
+  (TimeEval-based pipeline; Kaggle: `esa-adb-challenge`)
+
+| | Mission1 | Mission2 | Mission3 |
+|---|---|---|---|
+| Channels (target) | 76 (58) | 100 (47) | 48 (24) |
+| Telecommands | 698 | 123 | 0 |
+| Duration (anonymised) | 14 y | 3.5 y | 8 y |
+| Data points | ~775 M | ~777 M | ~745 M |
+| Annotated (%) | 1.80 | 0.58 | 1.03 |
+| Events | 200 | 644 | 586 |
+| Anomalies | 118 | 31 | 8 |
+| Rare nominal events | 78 | 613 | 25 |
+| Gaps / invalid | 4 / 0 | 0 / 0 | 397 / 156 |
+
+Each mission folder ships `channels/<param>.zip` (per-channel time series),
+`telecommands/<tc>.zip`, `labels.csv` and `anomaly_types.csv` (`Anomaly` /
+`Rare Event` / `Gap`). Mission3 is excluded from the benchmark upstream
+(trivial anomalies).
+
+> **Why it is not in the causal pipeline**: the dataset is fully anonymised —
+> channel names, mission identity **and the time axis**. The paper states the
+> anonymisation *prevents expecting anomalies at specific times, e.g. during
+> increased solar activity*. Because the timestamps cannot be aligned with
+> DONKI/OMNI storm times, this dataset **cannot** contribute to the CME
+> correlation study. It is documented here as the reference benchmark for
+> spacecraft-telemetry anomaly detection, in case a telemetry-anomaly module
+> is ever added.
+
+### Satellite status & failure reason (extra layers)
+
+Chosen as verification layers rather than bulk-cut into the pipeline:
+
+| Source | Adds | Role |
+|--------|------|------|
+| **Gunter's Space Page** (`space.skyrocket.de`) | Per-satellite **status and failure cause** (e.g. "failed in 1998 due to momentum wheel problems") | Curated **secondary** reference to validate targeted events (e.g. the Feb-2022 Starlink case); HTML, no API — scrape on demand |
+| **DISCOSweb** (ESA) | Object metadata + `reentryEpoch`, launches, fragmentations, re-entries | REST API (account) — complements Space-Track object metadata |
+| **UCS Satellite Database** | Current operational status (Operational / Non-operational) | Snapshot of "alive today", no failure history |
+
+Space-weather attribution itself comes from **DONKI (GST/SEP) + OMNI
+(Dst/Kp/protons) + decay events in Space-Track**; these layers only answer
+"why did this specific satellite stop working".
+
+### Planned collection
+
+Not yet executed (no scripts written yet):
+
+- `scripts/fetch_omni.py` — OMNI **hourly 1963 → today** (incl. Dst, Kp, proton
+  fluxes) as Parquet partitioned by year.
+- `scripts/fetch_donki.py` — DONKI **causal core** endpoints: `CME`,
+  `CMEAnalysis`, `GST`, `SEP`, `Solarflare`, `HSS`, `notifications` → Parquet.
+  Requires a free NASA API key (`NASA_API_KEY` in `.env`).
+
+Other historical sources were scoped earlier (CDAW/SOHO-LASCO CME catalog
+1996+, CACTus 1997–2017, HELCATS/STEREO 2007–2017) and remain candidates.
+DONKI/OMNI were chosen as the core because DONKI adds real 3D direction plus
+SEP/GST events, and OMNI carries the continuous Dst/Kp/proton series.
 
 ---
 
@@ -514,9 +592,14 @@ and 1 to `-`).
 cme-sentinel/
 ├── .env                     # credentials (git-ignored)
 ├── .env.example             # template for the credentials file
+├── AGENTS.md                # project instructions for AI agents (Spanish)
 ├── requirements.txt          # Python dependencies
 ├── scripts/
-│   └── fetch_gp_history.py  # the downloader
+│   ├── fetch_gp_history.py  # the orbital-catalog downloader
+│   ├── fetch_omni.py        # OMNI solar-wind downloader (planned)
+│   └── fetch_donki.py       # DONKI space-weather events downloader (planned)
+├── notebooks/
+│   └── 01_validate_and_explore.ipynb  # catalog validation & exploration
 └── data/
     ├── .progress.json       # download progress (git-ignored)
     └── gp_history/
