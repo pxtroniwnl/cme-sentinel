@@ -14,8 +14,10 @@ complete set of Orbit Mean-Elements Message (OMM) columns exposed by the API
 (orbital elements, satellite-catalog metadata, and the raw TLE lines).
 
 The space-weather side of the causal chain (CME catalogs, geomagnetic
-indices, solar wind) is **planned but not yet collected** — see
-[causal study data sources](#causal-study-data-sources).
+indices, solar wind) is **written but not yet downloaded** — the collector
+scripts are ready to run and documented in the
+[causal study data sources](#causal-study-data-sources) section and the
+[data collection runbook](#ready-to-run-collection-scripts).
 
 ---
 
@@ -27,7 +29,11 @@ indices, solar wind) is **planned but not yet collected** — see
   - [Source comparison](#source-comparison)
   - [ESA Anomaly Dataset (documented reference)](#esa-anomaly-dataset-documented-reference)
   - [Satellite status & failure reason (extra layers)](#satellite-status--failure-reason-extra-layers)
-  - [Planned collection](#planned-collection)
+  - [Ready-to-run collection scripts](#ready-to-run-collection-scripts)
+    - [OMNI](#omni-hourly-solar-wind--indices)
+    - [DONKI](#donki-space-weather-events)
+    - [Gunter's Space Page](#gunters-space-page-satellite-status--failure)
+  - [Design decisions & caveats](#design-decisions--caveats)
 - [How the data source works](#how-the-data-source-works)
 - [Requirements](#requirements)
 - [Setup](#setup)
@@ -112,8 +118,8 @@ clustered `DECAY_DATE`s right after a strong storm.
 |--------|----------|----------|-------------------|--------|
 | **Space-Track `gp_history`** (already collected) | Orbital state of every object (TLE/OMM) | 1960 → today | **Effect**: drag, decay, re-entry | CSV → Parquet (this repo) |
 | **ESA Anomaly Dataset** | On-board telemetry (housekeeping) + curated anomaly labels | 3 missions, ~25.5 y (**timestamps anonymised**) | ❌ **Not usable** for correlation (see below) | Zenodo zip (~11.6 GB) |
-| **DONKI** (NASA CCMC) | Discrete space-weather events: CME (3D cone), geomagnetic storms (GST), SEP, solar flares, HSS | ≈2010/2013 → today | **Event framework**: what happened and when | REST JSON (free NASA API key) |
-| **OMNI** (NASA GSFC) | Continuous solar wind + **Dst, Kp, proton fluxes** | Hourly **1963** → today; 5-min 1995 → today | **Continuous driver** + geomagnetic response | Fixed-width ASCII, yearly files |
+| **DONKI** (NASA CCMC) | Discrete space-weather events: CME (3D cone), geomagnetic storms (GST), SEP, solar flares, HSS | ≈2010/2013 → today | **Event framework**: what happened and when | REST JSON (free NASA API key) → `scripts/fetch_donki.py` |
+| **OMNI** (NASA GSFC) | Continuous solar wind + **Dst, Kp, proton fluxes** | Hourly **1963** → today; 5-min 1995 → today | **Continuous driver** + geomagnetic response | HAPI CSV (SPDF) → `scripts/fetch_omni.py` |
 
 ### ESA Anomaly Dataset (documented reference)
 
@@ -161,7 +167,7 @@ Chosen as verification layers rather than bulk-cut into the pipeline:
 
 | Source | Adds | Role |
 |--------|------|------|
-| **Gunter's Space Page** (`space.skyrocket.de`) | Per-satellite **status and failure cause** (e.g. "failed in 1998 due to momentum wheel problems") | Curated **secondary** reference to validate targeted events (e.g. the Feb-2022 Starlink case); HTML, no API — scrape on demand |
+| **Gunter's Space Page** (`space.skyrocket.de`) | Per-satellite **status and failure cause** (e.g. "failed in 1998 due to momentum wheel problems") | Curated **secondary** reference to validate targeted events (e.g. the Feb-2022 Starlink case); HTML, no API — full-site crawl via `scripts/fetch_gunter.py` |
 | **DISCOSweb** (ESA) | Object metadata + `reentryEpoch`, launches, fragmentations, re-entries | REST API (account) — complements Space-Track object metadata |
 | **UCS Satellite Database** | Current operational status (Operational / Non-operational) | Snapshot of "alive today", no failure history |
 
@@ -169,15 +175,178 @@ Space-weather attribution itself comes from **DONKI (GST/SEP) + OMNI
 (Dst/Kp/protons) + decay events in Space-Track**; these layers only answer
 "why did this specific satellite stop working".
 
-### Planned collection
+### Ready-to-run collection scripts
 
-Not yet executed (no scripts written yet):
+Three downloaders are written, follow the same conventions as
+`fetch_gp_history.py`, and are **documented below with nothing executed
+yet**. Run them in the order given (OMNI first — it is the continuous
+driver — then DONKI, then Gunter's, which is the slowest). Every script
+resumes safely from `data/.progress.json`; `--reset` is only for
+intentional re-downloads.
 
-- `scripts/fetch_omni.py` — OMNI **hourly 1963 → today** (incl. Dst, Kp, proton
-  fluxes) as Parquet partitioned by year.
-- `scripts/fetch_donki.py` — DONKI **causal core** endpoints: `CME`,
-  `CMEAnalysis`, `GST`, `SEP`, `Solarflare`, `HSS`, `notifications` → Parquet.
-  Requires a free NASA API key (`NASA_API_KEY` in `.env`).
+| Script | Source | Command | Needs |
+|--------|--------|---------|-------|
+| `fetch_omni.py` | OMNI hourly merged (NASA SPDF, HAPI) | `python scripts/fetch_omni.py` | nothing (open data) |
+| `fetch_donki.py` | DONKI (NASA public API) | `python scripts/fetch_donki.py` | `NASA_API_KEY` in `.env` |
+| `fetch_gunter.py` | Gunter's Space Page (HTML crawl) | `python scripts/fetch_gunter.py` | nothing |
+
+Add `--help` to any script for the full options list. Test runs:
+`--limit 1` (OMNI/DONKI) or `--max-pages 10` (Gunter's).
+
+#### OMNI (hourly solar wind & indices)
+
+**Source**: NASA GSFC Space Physics Data Facility, CDAWeb HAPI server,
+dataset `OMNI_COHO1HR_MERGED_MAG_PLASMA`
+(https://cdaweb.gsfc.nasa.gov/hapi) — DOI `10.48322/6ffx-3441`
+(King & Papitashvili). Open data, CC0, no key required.
+
+**What it brings**: 1 row per hour, **1963 → today** (~565,000 rows) — the
+continuous geomagnetic/generic response that drives the orbital-decay
+pathway.
+
+| EPOCH | BZ_GSM (nT) | BGT (nT) | flow_speed (km/s) | proton_density (#/cm³) | DST (nT) | Kp | AE_INDEX (nT) | P<10MeV_flux |
+|---|---|---|---|---|---|---|---|---|
+| 2022-02-03 11:00 | −8.2 | 12.5 | 615 | 7.4 | −42 | 37 | 618 | 0.02 |
+| 2022-02-03 12:00 | −15.4 | 18.9 | 689 | 9.1 | −85 | 57 | 1248 | 0.04 |
+| 2022-02-03 13:00 | −19.8 | 22.1 | 702 | 10.2 | −112 | 73 | 1866 | 0.03 |
+
+*Illustrative rows; the exact parameter set is resolved at runtime from the
+HAPI `/info` endpoint (IMF, plasma, Dst/Kp/AE/AL/AU/ap, sunspot, F10.7,
+energetic protons).*
+
+**Why this source**: OMNI is the standard "L1-monopole" dataset used by the
+space-weather community: it time-shifts solar-wind measurements to the
+Earth's bow-shock nose and stitches in the definitive **Dst**, **Kp** and
+**proton flux** indices on the same hourly grid — one table you can join
+everything against.
+
+**How to run**:
+```bash
+python scripts/fetch_omni.py          # everything, 1963 → today
+python scripts/fetch_omni.py --limit 1                      # one year, test
+python scripts/fetch_omni.py --start 2022-01-01 --end 2022-12-31
+```
+
+**Output**: `data/omni/year=YYYY/part-00000.parquet` (one part per year,
+`year` int column, HAPI fill values e.g. `-1e31` → `NaN`).
+Estimated volume: a few hundred MB total; a few minutes to an hour of
+download time depending on throttling (default 3 s per request).
+
+#### DONKI (space-weather events)
+
+**Source**: NASA public API `https://api.nasa.gov/DONKI/...` (Space Weather
+Database Of Notifications, Knowledge, Information). US Government work,
+public domain. **Requires a free key** (https://api.nasa.gov) in `.env`:
+
+```dotenv
+NASA_API_KEY=your_nasa_api_key_here
+```
+
+**What it brings**: 1 row per **event** — the discrete causal framework
+(what happened and when). Endpoints fetched: `CME`, `CMEAnalysis`, `GST`,
+`FLR`, `SEP`, `IPS`, `HSS`. Records are JSON with nested arrays that the
+script flattens into columns (the arrays are also kept serialized as JSON).
+
+| activityID | startTime | sourceLocation | activeRegionNum | cmeAnalyses_speed_3d | cmeAnalyses_count | linked_activity_ids |
+|---|---|---|---|---|---|---|
+| 2022-02-01T17:00:00-CME-001 | 2022-02-01 17:00 | S24 | 12955 | 708 | 1 | [] |
+
+| gstID | startTime | kpIndex | all_kp_max | linked_activity_ids |
+|---|---|---|---|---|
+| 2022-02-03T22:00:00-GST-001 | 2022-02-03 22:00 | 6.0 | 6.0 | [2022-02-01T17:00:00-CME-001] |
+
+*(Illustrative rows; `linked_activity_ids` chains CME → GST/SEP for
+attribution.)*
+
+**Why this source**: DONKI adds what OMNI cannot — CME catalogs with **3D
+direction** (`cmeAnalyses[].speed_3d`, `isEarthDirected`), geomagnetic
+storm declarations, SEP/flare events and the **`linkedEvents` cause→effect
+chains**, timestamped in real UTC.
+
+**How to run**:
+```bash
+python scripts/fetch_donki.py                       # all endpoints, 2010 → today
+python scripts/fetch_donki.py --endpoints GST,SEP   # subset
+python scripts/fetch_donki.py --limit 1             # one (endpoint, year) pair
+```
+
+**Output**: `data/donki/<endpoint>/year=YYYY/part-00000.parquet`.
+Estimated volume: hundreds of events per endpoint; small (a few MB).
+
+#### Gunter's Space Page (satellite status & failure)
+
+**Source**: https://space.skyrocket.de (G. Krebs) — HTML pages, no API.
+Curated **secondary** reference: per-satellite status and failure cause,
+including the free-text comsat-failure narratives.
+
+**What it brings**: two extracted tables plus the raw pages:
+
+1. **Index tables** → `data/gunter/tables.parquet` (rows scraped from the
+   satellite-directory tables):
+
+| satellite | cospar | date | ls | launch vehicle | remarks | source_url |
+|---|---|---|---|---|---|---|
+| GOES 9 (GOES J) | 1995-025A | 23.05.1995 | CC LC-36B | Atlas-1 | | https://space.skyrocket.de/doc_sdat/goes-i.htm |
+
+2. **Comsat failure narratives** → `data/gunter/incidents.parquet`
+   (heading + text pairs from `doc_sat/comsat_failures*` pages):
+
+| satellite | text | source_url |
+|---|---|---|
+| DirecTV-6 | "…fell victim to a solar flare in April 1997 which knocked out three transponders…" | https://space.skyrocket.de/doc_sat/comsat_failures.htm |
+
+3. **Raw content** → `data/gunter/pages/<page_id>.html` and `.txt`, plus a
+   crawl map `data/gunter/meta/pages.parquet` — so future parsing can be
+   improved without re-crawling.
+
+**Why this source**: it is the closest thing to a "why did this specific
+satellite stop working" record (dates are real but coarse, e.g. "April
+1997", and causes are prose) — useful to **illustrate** cases, not for the
+population-level statistics. It is the extra layer for the canonical
+Feb-2022 Starlink validation. It is deliberately kept **out** of the core
+event-study model.
+
+**How to run**:
+```bash
+python scripts/fetch_gunter.py                        # full-site crawl (resume-safe)
+python scripts/fetch_gunter.py --max-pages 100 --delay 2.0   # small test range
+python scripts/fetch_gunter.py --path-prefix doc_sdat          # mission pages only
+```
+
+**Output**: `data/gunter/{tables,incidents}.parquet`,
+`data/gunter/pages/*.{html,txt}`, `data/gunter/meta/pages.parquet`.
+The crawl respects `robots.txt`, sleeps `--delay` (default 1.5 s) per
+request and resumes via `data/.progress.json`; at 1.5 s one full run of
+`--max-pages 5000` takes roughly two hours and ~100–200 MB on disk. Scale
+`--max-pages` up and re-run to finish the whole site.
+
+### Design decisions & caveats
+
+Decisions recorded so the analysis (-phase) stays consistent:
+
+- **ESA Anomaly Dataset is excluded from the causal pipeline** (see above):
+  its time axis is anonymised, so its anomalies cannot be aligned with
+  DONKI/OMNI storm times. Documented only.
+- **Exact orbital position via SGP4**: the user chose propagating the
+  TLEs with SGP4 rather than just orbit *type*. Caveat: propagation error
+  grows with TLE age, so Phase-3 propagation should use the object's TLE
+  closest to the storm (±7 days; Starlink updates TLEs ~6×/day, older
+  catalog objects far less often).
+- **Population-level event study**: compare decay rate inside post-storm
+  windows vs. baseline across all objects (fixed-effects OLS), with the
+  Starlink Feb-2022 re-entry cluster as a validation case (75 objects
+  decayed in Feb-2022 in this catalog, incl. Starlink).
+- **Real-data gotchas** to remember:
+  - In `data/gp_history` `DECAY_DATE` of active objects is the **empty
+    string `""`**, not `NaN` (the downloader used `keep_default_na=False`).
+    Filter with `df["DECAY_DATE"].astype(str).ne("")`, not `.isna()`.
+  - The OMNI HAPI endpoint that works is **`cdaweb.gsfc.nasa.gov/hapi`**;
+    the `spdf.gsfc.nasa.gov/hapi` host returns 403.
+  - OMNI fill values (`-1e31`, or `999.9` in some legacy outputs) are
+    converted to `NaN` by `fetch_omni.py`; DONKI `Kp` is 10× the usual
+    index in OMNI (mapped 0,0+→3, 1→10, …).
+- **Gunter's role**: narrative layer for targeted validation (e.g. Starlink
+  Feb-2022), never the causal engine.
 
 Other historical sources were scoped earlier (CDAW/SOHO-LASCO CME catalog
 1996+, CACTus 1997–2017, HELCATS/STEREO 2007–2017) and remain candidates.
@@ -212,6 +381,8 @@ automatically.
 - Python **3.10+** (the repo pins 3.14).
 - A registered, approved **Space-Track.org account**. New users must accept
   the Space-Track user agreement and wait for approval.
+- A free **NASA API key** (for `fetch_donki.py` only; it already ships a
+  `DEMO_KEY` fallback on the server side, but that is heavily rate-limited).
 - Enough disk space for the full history (see
   [Considerations](#considerations-rate-limits-and-policy)).
 
@@ -236,6 +407,7 @@ cp .env.example .env      # then edit .env
 ```dotenv
 SPACE_TRACK_EMAIL=your_email@example.com
 SPACE_TRACK_PASSWORD=your_password_here
+NASA_API_KEY=your_nasa_api_key_here        # optional for now (DONKI only)
 ```
 
 > Note: `.env` and `data/` are already git-ignored, so credentials and
@@ -536,8 +708,19 @@ leo = df[df["PERIAPSIS"] <= 2000.0]
 # Only Starlink payloads:
 starlink = df[df["OBJECT_NAME"].str.startswith("STARLINK")]
 
-# Only active (non-decayed) objects:
-active = df[df["DECAY_DATE"].isna()]
+# Only active (non-decayed) objects: remember DECAY_DATE is "" for active
+# objects (see "Design decisions & caveats"), so:
+active = df[df["DECAY_DATE"].astype(str).ne("")]
+```
+
+The other datasets read the same way:
+
+```python
+omni = pd.read_parquet("data/omni")              # hourly solar wind + indices
+donki_cme = pd.read_parquet("data/donki/CME")    # one row per CME
+donki_gst = pd.read_parquet("data/donki/GST")    # one row per storm
+gunter_tables = pd.read_parquet("data/gunter/tables.parquet")
+gunter_incidents = pd.read_parquet("data/gunter/incidents.parquet")
 ```
 
 ---
@@ -595,13 +778,17 @@ cme-sentinel/
 ├── AGENTS.md                # project instructions for AI agents (Spanish)
 ├── requirements.txt          # Python dependencies
 ├── scripts/
-│   ├── fetch_gp_history.py  # the orbital-catalog downloader
-│   ├── fetch_omni.py        # OMNI solar-wind downloader (planned)
-│   └── fetch_donki.py       # DONKI space-weather events downloader (planned)
+│   ├── fetch_gp_history.py  # the orbital-catalog downloader (already run)
+│   ├── fetch_omni.py        # OMNI hourly solar wind & indices (ready, not run)
+│   ├── fetch_donki.py       # DONKI space-weather events (ready, needs NASA_API_KEY)
+│   └── fetch_gunter.py      # Gunter's Space Page full-site crawl (ready, not run)
 ├── notebooks/
 │   └── 01_validate_and_explore.ipynb  # catalog validation & exploration
 └── data/
     ├── .progress.json       # download progress (git-ignored)
-    └── gp_history/
-        └── year=YYYY/       # Parquet partitions (git-ignored)
+    ├── gp_history/
+    │   └── year=YYYY/       # Parquet partitions (git-ignored)
+    ├── omni/                # created by fetch_omni.py (git-ignored)
+    ├── donki/               # created by fetch_donki.py (git-ignored)
+    └── gunter/              # created by fetch_gunter.py (git-ignored)
 ```
