@@ -9,7 +9,8 @@ indique lo contrario.
 Proyecto de investigación causal **CME → efecto satelital**. Objetivo final:
 demostrar con datos históricos que las eyecciones de masa coronal afectan a
 los satélites (decaimiento orbital por drag y fallas electrónicas) y, a
-futuro, generar **aviso anticipado**.
+futuro, generar **aviso anticipado** (predicción de tormentas + riesgo de
+daño por satélite específico) y **visualizaciones 3D**. Ver README §1 y §6.
 
 Cadena física (el modelo mental de todo el proyecto):
 
@@ -38,8 +39,11 @@ DONKI/OMNI ni lo uses en el análisis causal.
 
 ## Layout
 
-- `README.md` — doc de referencia completa (fuente de verdad del data model y
-  del estado de cada fase).
+- `README.md` — doc de referencia completa en inglés (fuente de verdad del
+  data model, del pipeline §2, de la compaginación §3 y del estado de cada
+  fase).
+- `README.es.md` — traducción completa del README al español; misma
+  estructura; mantenela sincronizada si se edita el README.
 - `scripts/fetch_gp_history.py` — descargador del catálogo orbital; es el
   **patrón de estilo** que deben seguir los futuros descargadores.
 - `scripts/fetch_omni.py` — OMNI horario 1963+ vía HAPI (público, sin key).
@@ -92,7 +96,9 @@ DONKI/OMNI ni lo uses en el análisis causal.
 2. ⏳ **Scripts listos, descarga pendiente**: OMNI (horario 1963+), DONKI
    (núcleo causal) y Gunter's (capa narrativa). Documentados en el README.
 3. ⏳ Cruzar tormentas (OMNI/DONKI) contra decaimientos (Space-Track) y validar
-   con el caso Starlink feb-2022.
+   con el caso Starlink feb-2022. La metodología de compaginación (§3 del
+   README) y la visión de predicción/3D (§6 del README) están documentadas
+   pero sin implementar.
 
 ## Decisiones registradas
 
