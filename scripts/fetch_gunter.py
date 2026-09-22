@@ -33,7 +33,8 @@ Usage
 -----
     python scripts/fetch_gunter.py                 # full crawl, resume-safe
     python scripts/fetch_gunter.py --max-pages 100 --delay 2.0
-    python scripts/fetch_gunter.py --path-prefix doc_sdat   # mission pages only
+    python scripts/fetch_gunter.py --satellites    # satellite sections only
+    python scripts/fetch_gunter.py --path-prefix doc_sdat
 """
 
 from __future__ import annotations
@@ -48,7 +49,7 @@ from collections import deque
 from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urljoin, urlparse, urldefrag
+from urllib.parse import urljoin, urlparse, urldefrag, urlunsplit
 
 import pandas as pd
 import requests
@@ -71,7 +72,8 @@ HOST = urlparse(SITE).hostname
 
 MAX_RETRIES = 3
 DEFAULT_DELAY = 1.5
-DEFAULT_MAX_PAGES = 5000
+DEFAULT_MAX_PAGES = 8000
+SATELLITE_PREFIXES = ("/doc_sdat/", "/doc_sat/", "/directories/sat")
 SKIP_SUFFIX = (
     ".gif", ".jpg", ".jpeg", ".png", ".css", ".js", ".pdf", ".zip",
     ".ico", ".svg", ".webp", ".mp4", ".mov", ".ppt", ".kml", ".csv", ".dat",
@@ -85,20 +87,27 @@ logging.basicConfig(
 LOG = logging.getLogger("fetch_gunter")
 
 
-def load_progress() -> set[str]:
+def load_progress() -> tuple[set[str], deque[str]]:
     if not PROGRESS_FILE.exists():
-        return set()
+        return set(), deque()
     try:
-        return set(json.loads(PROGRESS_FILE.read_text(encoding="utf-8")).get("completed", []))
+        data = json.loads(PROGRESS_FILE.read_text(encoding="utf-8"))
+        completed = set(data.get("completed", []))
+        frontier = deque(data.get("frontier", []))
+        return completed, frontier
     except (json.JSONDecodeError, OSError):
         LOG.warning("Could not read %s, starting from scratch.", PROGRESS_FILE)
-        return set()
+        return set(), deque()
 
 
-def save_progress(completed: set[str]) -> None:
+def save_progress(completed: set[str], frontier: deque[str]) -> None:
     PROGRESS_FILE.parent.mkdir(parents=True, exist_ok=True)
     PROGRESS_FILE.write_text(
-        json.dumps({"completed": sorted(completed)}, indent=2), encoding="utf-8"
+        json.dumps(
+            {"completed": sorted(completed), "frontier": list(dict.fromkeys(frontier))},
+            indent=2,
+        ),
+        encoding="utf-8",
     )
 
 
@@ -133,6 +142,64 @@ def flush(tables_rows: list[dict], incidents_rows: list[dict], pages_meta: list[
 
 def page_key(url: str) -> str:
     return "gunter:page:" + hashlib.sha1(url.encode("utf-8")).hexdigest()
+
+
+def normalize_url(url: str) -> str:
+    parsed = urlparse(url)
+    parts = parsed.path.split("/")
+    collapsed = []
+    prev = None
+    for part in parts:
+        if part == prev:
+            continue
+        collapsed.append(part)
+        prev = part
+    return urlunsplit((parsed.scheme, parsed.netloc, "/".join(collapsed), parsed.query, ""))
+
+
+def rebuild_frontier(completed: set[str], frontier: deque[str]) -> deque[str]:
+    known = set(completed)
+    rebuilt = deque()
+    for url in frontier:
+        canonical = normalize_url(url)
+        key = page_key(canonical)
+        if key in known:
+            continue
+        known.add(key)
+        rebuilt.append(canonical)
+    if len(rebuilt) != len(frontier):
+        LOG.info("Dropped %d alias/duplicate URLs from the frontier.", len(frontier) - len(rebuilt))
+    return rebuilt
+
+
+def prune_aliases() -> None:
+    meta = load_existing(PAGES_META_PATH)
+    if not meta:
+        return
+    canonical_urls = {row["url"] for row in meta if normalize_url(row["url"]) == row["url"]}
+    alias_ids = {row["page_id"] for row in meta if normalize_url(row["url"]) != row["url"]}
+    dropped = len(alias_ids)
+    if not dropped:
+        LOG.info("No alias pages to prune.")
+        return
+    LOG.info("Pruning %d alias pages and their parquet rows...", dropped)
+    for pid in alias_ids:
+        for ext in ("html", "txt"):
+            page_file = PAGES_DIR / f"{pid}.{ext}"
+            if page_file.exists():
+                page_file.unlink()
+    kept_meta = [row for row in meta if row["url"] in canonical_urls]
+    META_DIR.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(kept_meta).to_parquet(PAGES_META_PATH, engine="pyarrow", index=False)
+    for label, path in (("tables", TABLES_PATH), ("incidents", INCIDENTS_PATH)):
+        rows = load_existing(path)
+        if not rows:
+            continue
+        df = pd.DataFrame(rows)
+        clean = df[[normalize_url(u) == u for u in df["source_url"]]]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        clean.to_parquet(path, engine="pyarrow", index=False)
+        LOG.info("  %s: %d -> %d rows", label, len(df), len(clean))
 
 
 def load_disallow(session: requests.Session, delay: float) -> list[str]:
@@ -197,15 +264,40 @@ def extract_index_tables(soup: BeautifulSoup, url: str) -> list[dict]:
 
 
 def extract_incidents(soup: BeautifulSoup, url: str) -> list[dict]:
-    if "comsat_failures" not in url:
-        return []
     rows: list[dict] = []
-    for tag in soup.find_all(["h2", "h3", "dt"]):
-        name = tag.get_text(" ", strip=True)
-        sibling = tag.find_next_sibling()
-        text = sibling.get_text(" ", strip=True) if sibling else ""
-        if name and text:
-            rows.append({"satellite": name, "text": text, "source_url": url})
+    path = urlparse(url).path
+
+    if "comsat_failures" in url:
+        for table in soup.find_all("table"):
+            if table.get("id") == "satflist":
+                for tr in table.find_all("tr"):
+                    cells = tr.find_all("td")
+                    if len(cells) >= 2:
+                        name = cells[0].get_text(" ", strip=True)
+                        text = cells[1].get_text(" ", strip=True)
+                        if name and text:
+                            rows.append({
+                                "satellite": name,
+                                "text": text,
+                                "source_url": url,
+                                "kind": "comsat_failure",
+                            })
+        return rows
+
+    if path.startswith("/doc_sdat/"):
+        desc = soup.find("div", id="satdescription")
+        if desc is not None:
+            title = soup.find("h1")
+            name = title.get_text(" ", strip=True) if title else ""
+            text = desc.get_text(" ", strip=True)
+            if name and text:
+                rows.append({
+                    "satellite": name,
+                    "text": text,
+                    "source_url": url,
+                    "kind": "description",
+                })
+
     return rows
 
 
@@ -223,37 +315,59 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--max-pages",
         type=int,
         default=DEFAULT_MAX_PAGES,
-        help="Stop after this many downloaded pages (default: 5000).",
+        help="Stop after this many downloaded pages (default: 8000).",
     )
     parser.add_argument(
         "--path-prefix",
+        action="append",
         default=None,
-        help="Only visit paths starting with this prefix (e.g. doc_sdat).",
+        help="Only visit paths starting with this prefix (repeatable).",
+    )
+    parser.add_argument(
+        "--satellites",
+        action="store_true",
+        help="Crawl only the satellite sections: doc_sdat/, doc_sat/, directories/sat*.",
     )
     parser.add_argument(
         "--reset",
         action="store_true",
         help="Ignore existing progress and re-crawl everything.",
     )
+    parser.add_argument(
+        "--prune-aliases",
+        action="store_true",
+        help="Delete duplicate pages reached through redirect aliases and rebuild parquets, then exit.",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
-
     PAGES_DIR.mkdir(parents=True, exist_ok=True)
+
+    if args.prune_aliases:
+        prune_aliases()
+        return 0
+
     session = requests.Session()
     session.headers.update({"User-Agent": "cme-sentinel/0.1 research crawler (+politeness)"})
 
     disallow = load_disallow(session, args.delay)
-    completed = set() if args.reset else load_progress()
-    seen = set(completed)
+    completed, old_frontier = (set(), deque()) if args.reset else load_progress()
+    frontier = deque() if args.reset else rebuild_frontier(completed, old_frontier)
+    seen = set(completed) | set(frontier)
 
-    frontier: deque[str] = deque()
-    seed_key = page_key(SEED)
-    if seed_key not in seen:
-        seen.add(seed_key)
-        frontier.append(SEED)
+    prefixes = list(SATELLITE_PREFIXES) if args.satellites else (args.path_prefix or [])
+
+    if not frontier:
+        initial_seeds = [SEED]
+        if args.satellites:
+            initial_seeds.append(SITE + "/doc_sat/comsat_failures.htm")
+        for seed in initial_seeds:
+            seed_key = page_key(seed)
+            if seed_key not in seen:
+                seen.add(seed_key)
+                frontier.append(seed)
 
     tables_rows = load_existing(TABLES_PATH)
     incidents_rows = load_existing(INCIDENTS_PATH)
@@ -280,9 +394,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         except Exception as exc:  # noqa: BLE001
             LOG.warning("Failed %s: %s", url, exc)
             completed.add(key)
-            save_progress(completed)
+            save_progress(completed, frontier)
             failed += 1
             continue
+
+        final_url = normalize_url(resp.url)
+        if final_url != url:
+            final_key = page_key(final_url)
+            if final_key in completed:
+                continue
+        url = final_url
+        key = page_key(url)
 
         soup = BeautifulSoup(resp.text, "html.parser")
         page_id = key.split(":")[-1][:8]
@@ -311,18 +433,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         completed.add(key)
         handled += 1
         if handled % 50 == 0:
-            save_progress(completed)
+            save_progress(completed, frontier)
             flush(tables_rows, incidents_rows, pages_meta)
             LOG.info("  crawled %d pages...", handled)
 
         for a in soup.find_all("a", href=True):
-            link = urljoin(url, urldefrag(a["href"])[0])
+            link = normalize_url(urljoin(url, urldefrag(a["href"])[0]))
             parsed = urlparse(link)
             if parsed.scheme not in ("http", "https") or parsed.hostname != HOST:
                 continue
             if parsed.path.lower().endswith(SKIP_SUFFIX):
                 continue
-            if args.path_prefix and not parsed.path.startswith(args.path_prefix):
+            if prefixes and not any(parsed.path.startswith(p) for p in prefixes):
                 continue
             if any(parsed.path.startswith(rule) for rule in disallow):
                 continue
@@ -331,7 +453,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 seen.add(link_key)
                 frontier.append(link)
 
-    save_progress(completed)
+    save_progress(completed, frontier)
     flush(tables_rows, incidents_rows, pages_meta)
     LOG.info(
         "Done: %d pages crawled, %d failed, %d queued, "
