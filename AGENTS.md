@@ -29,7 +29,7 @@ Cadena física (el modelo mental de todo el proyecto):
 | Space-Track `gp_history` | Efecto (órbita/decaimiento) | ✅ Descargado (`data/gp_history`) |
 | OMNI (NASA GSFC) | Driver continuo + Dst/Kp/protones | ✅ Script listo, **sin descargar** (`scripts/fetch_omni.py`, HAPI `cdaweb.gsfc.nasa.gov/hapi`, dataset `OMNI_COHO1HR_MERGED_MAG_PLASMA`) |
 | DONKI (NASA CCMC) | Eventos discretos (CME/GST/SEP/flares/HSS) | ✅ Script listo, **sin descargar** (`scripts/fetch_donki.py`; requiere `NASA_API_KEY`) |
-| Gunter's Space Page | Estado/falla por satélite — capa narrativa extra | ✅ Descargado (`data/gunter`), ver `fetch_gunter.py` + `build_gunter_failures.py` |
+| Gunter's Space Page | Estado/falla por satélite — capa narrativa extra | ✅ Descargado (`data/gunter`), ver `fetch_gunter.py` |
 | ESA Anomaly Dataset | Benchmark de telemetría — **fuera de la correlación causal** | 📄 Solo documentado |
 
 **Regla de oro**: el ESA Anomaly Dataset tiene el **eje temporal anonymizado**
@@ -51,16 +51,14 @@ DONKI/OMNI ni lo uses en el análisis causal.
 - `scripts/fetch_omni.py` — OMNI horario 1963+ vía HAPI (público, sin key).
 - `scripts/fetch_donki.py` — eventos discretos DONKI, JSON flateado.
 - `scripts/fetch_gunter.py` — crawler completo de Gunter's (raw + tablas).
-- `scripts/build_gunter_failures.py` — dataset de fallas satelitales
-  (`data/gunter/failures.parquet`) a partir de la prosa de cada página.
 - `notebooks/01_validate_and_explore.ipynb` — validación y exploración de
   `gp_history`.
 - `notebooks/02_gunter_tabular.ipynb` — export tabular de Gunter's (1 fila
   por objeto, **sin clasificación** de causa; ya ejecutado).
 - `data/gp_history/year=YYYY/part-*.parquet` — catálogo orbital (git-ignored).
 - `data/gunter/` — páginas crudas (`pages/`, `meta/pages.parquet`),
-  `tables.parquet`, `incidents.parquet`, `failures.parquet` y el export
-  tabular `gunter_tabular.parquet` (+`.csv`) de `notebooks/02_gunter_tabular.ipynb`
+  `tables.parquet`, `incidents.parquet` y el export tabular
+  `gunter_tabular.parquet` (+`.csv`) de `notebooks/02_gunter_tabular.ipynb`
   (todo git-ignored).
 - `data/.progress.json` — ventanas completadas para resume (git-ignored).
 - `.env` — credenciales (`SPACE_TRACK_EMAIL`, `SPACE_TRACK_PASSWORD`,
@@ -81,12 +79,11 @@ DONKI/OMNI ni lo uses en el análisis causal.
   para probar). Crawler por batches; resume-safe. Ya ejecutado (solo crawl
   completo una vez; si se re-corre, `--prune-aliases` limpia los alias
   `/doc_sdat/doc_sdat/<pag>` del sitio).
-  Dataset de fallas: `python scripts/build_gunter_failures.py`
-  (`--window-from 2012` para filtrar). Lee `data/gunter` y escribe
-  `data/gunter/failures.parquet`.
+  Export tabular: `notebooks/02_gunter_tabular.ipynb` (ya ejecutado) →
+  `data/gunter/gunter_tabular.parquet`.
 - **Estado actual**: `fetch_omni.py` y `fetch_donki.py` están escritos y
   validados sintácticamente pero **NO ejecutados**. Gunter's **SÍ** está
-  crawleado (Fase 2 ✅) y `failures.parquet` construido (heuristics).
+  crawleado (Fase 2 ✅) y exportado a tabla tabular.
 - Credenciales: copiar `.env.example` → `.env` y completar (incluye
   `NASA_API_KEY`).
 - **Atribución Gunter's obligatoria** (robots.txt permite crawlear pero la
@@ -113,8 +110,8 @@ DONKI/OMNI ni lo uses en el análisis causal.
 1. ✅ Catálogo orbital histórico completo descargado.
 2. ⏳ **OMNI y DONKI listos, descarga pendiente** (OMNI horario 1963+,
    DONKI núcleo causal). ✅ **Gunter's completo**: crawleado (~7.8k páginas
-   canónicas), tablas/incidents extraídos y `failures.parquet` construido y
-   validado (Galaxy 15 2022, SkyTerra 1 2012, 905 registros, 273 en ventana ≥2012).
+   canónicas), tablas/incidents extraídos y `gunter_tabular.parquet`
+   construido (32.323 filas, sin clasificar).
 3. ⏳ Cruzar tormentas (OMNI/DONKI) contra decaimientos (Space-Track) y validar
    con el caso Starlink feb-2022. La metodología de compaginación (§3 del
    README) y la visión de predicción/3D (§6 del README) están documentadas
@@ -134,8 +131,7 @@ DONKI/OMNI ni lo uses en el análisis causal.
 - Gotcha Gunter's: el sitio sirve **alias duplicados** `/doc_sdat/doc_sdat/<pag>.htm`
   que redirigen al canónico. El crawler los normaliza y puede limpiarse con
   `--prune-aliases`; no volver a crawlear el sitio completo (lento y
-  churnoso). `failures.parquet` es **heurístico** (patrones de frases sobre
-  prosa): revisar `cause_category`/`failure_year` antes de usar; la pérdida
+  churnoso). El export tabular es **sin clasificar**; la pérdida
   de Starlink feb-2022 no está narrada por Gunter.
 
 ## Política de datos

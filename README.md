@@ -15,7 +15,7 @@ toward **early warning** of storm arrivals and **per-satellite damage risk**.
 | 0 | Space-Track `gp_history` orbital catalog (1960 → today) | ✅ downloaded — 67.2M element sets, 63,762 objects, 455 parts, ~12 GB |
 | 1 | OMNI hourly solar wind & geomagnetic indices (1963 → today) | ⏳ script ready (`fetch_omni.py`), download pending |
 | 2 | DONKI discrete events (CME/GST/SEP/flares/HSS) | ⏳ script ready (`fetch_donki.py`), needs `NASA_API_KEY` |
-| 3 | Gunter's Space Page (per-satellite status/failure) | ✅ downloaded — 7.8k canonical pages; `failures.parquet`: 905 records, 273 after 2012 |
+| 3 | Gunter's Space Page (per-satellite status/failure) | ✅ downloaded — 7.8k canonical pages; tabular export 32,323 rows, unclassified |
 | 4 | Combine datasets, event study + SGP4 | ⏳ pending |
 
 ---
@@ -110,7 +110,7 @@ flowchart LR
 | 0 | Space-Track `gp_history` | **Effect**: orbital state, drag, decay, re-entry | `fetch_gp_history.py` | `data/gp_history/year=YYYY/` | ✅ |
 | 1 | OMNI (NASA SPDF) | **Continuous driver**: solar wind + Dst/Kp/protons | `fetch_omni.py` | `data/omni/year=YYYY/` | ⏳ |
 | 2 | DONKI (NASA CCMC) | **Event framework**: CME/GST/SEP/flares + causal chains | `fetch_donki.py` | `data/donki/<endpoint>/year=YYYY/` | ⏳ |
-| 3 | Gunter's Space Page | **Narrative layer**: per-satellite status & failure cause | `fetch_gunter.py`, `build_gunter_failures.py` | `data/gunter/{tables,incidents,failures}.parquet` + raw pages | ✅ |
+| 3 | Gunter's Space Page | **Narrative layer**: per-satellite status & failure cause | `fetch_gunter.py` (+ `02_gunter_tabular.ipynb`) | `data/gunter/{tables,incidents}.parquet` + raw pages + `gunter_tabular.parquet` | ✅ |
 
 ### 2.2 Stage 0: Space-Track gp_history
 
@@ -198,7 +198,9 @@ definition of "a storm happened because of a CME".
 Curated **secondary** reference: per-satellite status and failure cause,
 including free-text comsat-failure narratives.
 
-**What it brings**: the crawler extracts three artifacts plus the raw pages:
+**What it brings**: the crawler extracts the tabular data and the raw pages
+(this repo does **not** classify or build a derived failure dataset — the
+narrative is exported as-is for later analysis):
 
 1. **Index tables** → `data/gunter/tables.parquet` (rows scraped from the
    satellite-directory tables):
@@ -214,54 +216,20 @@ including free-text comsat-failure narratives.
 |---|---|---|
 | DirecTV-6 | "…fell victim to a solar flare in April 1997 which knocked out three transponders…" | https://space.skyrocket.de/doc_sat/comsat_failures.htm |
 
-3. **Failure dataset** → `data/gunter/failures.parquet` (one row per
-   satellite that stopped working; built by `build_gunter_failures.py` from
-   the free-text failure narratives, see below).
-4. **Raw content** → `data/gunter/pages/<page_id>.html` and `.txt`, plus a
+3. **Raw content** → `data/gunter/pages/<page_id>.html` and `.txt`, plus a
    crawl map `data/gunter/meta/pages.parquet` — so future parsing can be
    improved without re-crawling.
 
-**The failure dataset** (`build_gunter_failures.py`): failures are written by
-Gunter as free prose inside the `#satdescription` div of each `doc_sdat`
-page. The builder detects them with phrase patterns:
-
-- `DISPOSITION_PATTERNS` — unambiguous failure phrases ("failed in",
-  "was lost", "stopped working", …) that trigger a hit on their own;
-- `MENTION_PATTERNS` — weaker phrases ("after only", "end of mission", …)
-  that only count when the sentence does **not** match `NEGATIVE_CONTEXT`
-  (scientific/instrument context and hypothetical risk wording like "can
-  lead to", "could", "risk of");
-- `DRIVER_PATTERNS` — per-cause keyword groups (`propulsion`, `power`,
-  `attitude`, `comms_command`, `space_weather`) scored **only on the hit
-  sentences** to produce `cause_category`; unclassified failures get
-  `other`;
-- `RECOVERY_KEYWORDS` — phrases like "was never recovered" that confirm a
-  failure is terminal.
-
-Schema (selected columns): `satellite`, `description_text`,
-`disposition_phrase`, `mention_phrase`, `reason_text`, `cause_category`,
-`failure_year` (parsed from the sentence when present, else `None`),
-`launch_year`, `source_url`, `window_2012_plus` (True when the failure year
-parses to ≥ 2012).
-
-Current dataset: **905 failure records overall, 273 in the 2012+ window**;
-cause breakdown `{'other': 786, 'propulsion': 49, 'power': 36, 'attitude':
-21, 'comms_command': 9, 'space_weather': 4}`. The 4 `space_weather` hits are
-the historically verifiable ones — **Telstar 401** (geomagnetic storm, Jan
-1997), **Tempo 2 / DirecTV 5, 6** (solar flare, Apr 1997), **SkyTerra 1**
-(2012, in window) and **Galaxy 15** (2022, in window). The builder also
-accepts `--window-from YYYY` to filter the window at build time.
-
-**Tabular export (no classification)** — `notebooks/02_gunter_tabular.ipynb`
-(already run) joins everything crawled into one wide table, **one row per
-object/launch** from the `#satlist` registry: `satellite`, `cospar`,
-`launch_date`, `launch_site`, `launch_vehicle`, `remarks`, the 11 `#satdata`
-metadata fields (Nation…Orbit), the full `#satdescription` prose plus
-`mentions_years`, and (only where Gunter narrates a failure, without any
-cause classification) `failure_year`, `failure_years`, `recovered`,
-`failure_reason` → `data/gunter/gunter_tabular.parquet` (+ CSV).
-32,323 object rows; COSPAR and raw launch dates allow the fuzzy join to
-`gp_history` in §3.
+**Tabular export (no filtering/classification)** —
+`notebooks/02_gunter_tabular.ipynb` (already run) joins everything crawled
+into one wide table, **one row per object/launch** from the `#satlist`
+registry: `satellite`, `cospar`, `launch_date`, `launch_site`,
+`launch_vehicle`, `remarks`, the 11 `#satdata` metadata fields (Nation…
+Orbit), the full `#satdescription` prose and `mentions_years` (years cited
+in the prose) → `data/gunter/gunter_tabular.parquet` (+ CSV). 32,323 object
+rows; COSPAR and raw launch dates allow the fuzzy join to `gp_history` in §3.
+The failure *reason* is carried verbatim in `description_text` / `remarks` —
+nothing is inferred or categorized here.
 
 **Licensing**: the crawler respects
 `https://space.skyrocket.de/robots.txt`, which allows crawling (`Allow: /`)
@@ -278,13 +246,11 @@ not for population-level statistics. It is the narrative extra layer for
 the Starlink Feb-2022 validation and a **punctual control** for the §3
 analysis, deliberately kept **out** of the core event-study model.
 
-**Known caveats of the failure dataset** (heuristics, review before use):
-failure causes are free prose, so `cause_category` is a keyword-based best
-effort; `failure_year` is only present when the sentence states a year;
-launch-registry `remarks` can produce terse rows (e.g. "Failed");
-`comsat_failures*` pages predate ~2004, so most post-2004 satellites are
-covered only through their `doc_sdat` page; the Starlink Feb-2022 loss is
-**not** narrated by Gunter — it stays a TLE-validation case only (§3.4).
+**Known caveats**: the narrative is free prose by a single author — dates
+are coarse and causes sometimes speculative (`comsat_failures*` predates
+~2004, so later satellites are covered via their own `doc_sdat` page); the
+Starlink Feb-2022 loss is **not** narrated by Gunter — it stays a
+TLE-validation case only (§3.4).
 
 ### 2.6 Runbook
 
@@ -307,8 +273,8 @@ python scripts/fetch_donki.py
 # Stage 3a: Gunter's full-site crawl (resume-safe)
 python scripts/fetch_gunter.py
 
-# Stage 3b: build the satellite failure dataset from the crawled pages
-python scripts/build_gunter_failures.py        # --window-from 2012 to filter
+# Stage 3b: build the tabular export (note: already run)
+jupyter nbconvert --to notebook --execute --inplace notebooks/02_gunter_tabular.ipynb
 ```
 
 | Stage | Command | Needs | Output | Expected volume | Expected runtime |
@@ -317,7 +283,7 @@ python scripts/build_gunter_failures.py        # --window-from 2012 to filter
 | 1 | `fetch_omni.py` | none | `data/omni/` | a few hundred MB | minutes–1 h |
 | 2 | `fetch_donki.py` | `NASA_API_KEY` | `data/donki/` | a few MB | minutes |
 | 3a | `fetch_gunter.py` | none | `data/gunter/` (raw pages + tables/incidents) | ~230 MB | already done (~7.8k pages; ~13k URLs discovered, the rest alias) |
-| 3b | `build_gunter_failures.py` | none (reads 3a output) | `data/gunter/failures.parquet` | ~1 MB | seconds |
+| 3b | `02_gunter_tabular.ipynb` (nbconvert) | reads 3a output | `data/gunter/gunter_tabular.parquet` (+ CSV) | 8 MB / 69 MB | minutes |
 
 Propagated **caveats** (kept in the scripts): the OMNI HAPI host that works
 is `cdaweb.gsfc.nasa.gov/hapi` (`spdf.gsfc.nasa.gov/hapi` returns 403); OMNI
@@ -686,13 +652,11 @@ donki_cme = pd.read_parquet("data/donki/CME")    # one row per CME
 donki_gst = pd.read_parquet("data/donki/GST")    # one row per storm
 gunter_tables = pd.read_parquet("data/gunter/tables.parquet")
 gunter_incidents = pd.read_parquet("data/gunter/incidents.parquet")
-gunter_failures = pd.read_parquet("data/gunter/failures.parquet")
+gunter_tables = pd.read_parquet("data/gunter/tables.parquet")
+gunter_incidents = pd.read_parquet("data/gunter/incidents.parquet")
 
 # Tabular export (1 row per object, no classification), from 02_gunter_tabular.ipynb:
 gunter_tabular = pd.read_parquet("data/gunter/gunter_tabular.parquet")
-
-# Failures from 2012 onward:
-fail_2012 = gunter_failures[gunter_failures["window_2012_plus"]]
 ```
 
 ### 4.7 Verification
@@ -862,8 +826,7 @@ Candidate tooling: `plotly` (Python, easy 3D scatter + slider) and/or
 
 1. ✅ Stage 0 data (`gp_history`) — done.
 2. ⏳ Stages 1–2 data (OMNI/DONKI) — collectors ready, run them (§2.6).
-   ✅ Stage 3 (Gunter's) — crawled, `failures.parquet` built and validated
-   (Galaxy 15 2022, SkyTerra 1 2012).
+   ✅ Stage 3 (Gunter's) — crawled, tabular export built (unclassified).
 3. ⏳ §3 pipeline — storm windows, SGP4, event study, Starlink validation.
 4. 🚧 §6.1–6.2 — train predictors on the event-study features.
 5. 🧭 §6.3 — 3D visualization MVP (historical replay), then live views.
@@ -931,7 +894,6 @@ cme-sentinel/
 │   ├── fetch_omni.py        # Stage 1: OMNI hourly solar wind & indices (ready, not run)
 │   ├── fetch_donki.py       # Stage 2: DONKI events (ready, needs NASA_API_KEY)
 │   ├── fetch_gunter.py      # Stage 3a: Gunter's full-site crawl (already run)
-│   └── build_gunter_failures.py  # Stage 3b: failures.parquet from crawled pages (run)
 ├── notebooks/
 │   ├── 01_validate_and_explore.ipynb  # catalog validation & exploration
 │   └── 02_gunter_tabular.ipynb        # Gunter's wide tabular export (run)
@@ -943,7 +905,6 @@ cme-sentinel/
     └── gunter/              # Stage 3 ✅ (git-ignored)
         ├── tables.parquet       # directory index rows
         ├── incidents.parquet    # comsat_failures narratives
-        ├── failures.parquet     # failure dataset (905 records, 273 ≥ 2012)
         ├── gunter_tabular.parquet  # one row per object, no classification (with .csv)
         ├── meta/pages.parquet   # crawl map (canonical pages)
         └── pages/               # raw HTML + TXT per page
