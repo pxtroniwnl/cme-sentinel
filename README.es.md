@@ -9,16 +9,6 @@ naves espaciales — **decaimiento orbital** por drag atmosférico impulsado por
 tormentas y **fallas electrónicas** — como primer paso hacia el **aviso
 anticipado** de tormentas y del **riesgo de daño por satélite**.
 
-**Estado actual**
-
-| Etapa | Datos | Estado |
-|-------|-------|--------|
-| 0 | Catálogo orbital `gp_history` de Space-Track (1960 → hoy) | ✅ descargado — 67.2 M de elementos, 63,762 objetos, 455 partes, ~12 GB |
-| 1 | OMNI horario — viento solar e índices geomagnéticos (1963 → hoy) | ⏳ script listo (`fetch_omni.py`), descarga pendiente |
-| 2 | DONKI eventos discretos (CME/GST/SEP/flares/HSS) | ⏳ script listo (`fetch_donki.py`), requiere `NASA_API_KEY` |
-| 3 | Gunter's Space Page (estado/falla por satélite) | ✅ descargado — ≈7.8k páginas canónicas; export tabular 32.323 filas, sin clasificar |
-| 4 | Combinar datos, event study + SGP4 | ⏳ pendiente |
-
 ---
 
 ## Tabla de contenidos

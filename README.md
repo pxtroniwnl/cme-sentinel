@@ -8,16 +8,6 @@ measurably affect tracked objects and spacecraft — **orbital decay** via
 storm-driven atmospheric drag and **electronics failures** — as a first step
 toward **early warning** of storm arrivals and **per-satellite damage risk**.
 
-**Current state**
-
-| Stage | Data | Status |
-|-------|------|--------|
-| 0 | Space-Track `gp_history` orbital catalog (1960 → today) | ✅ downloaded — 67.2M element sets, 63,762 objects, 455 parts, ~12 GB |
-| 1 | OMNI hourly solar wind & geomagnetic indices (1963 → today) | ⏳ script ready (`fetch_omni.py`), download pending |
-| 2 | DONKI discrete events (CME/GST/SEP/flares/HSS) | ⏳ script ready (`fetch_donki.py`), needs `NASA_API_KEY` |
-| 3 | Gunter's Space Page (per-satellite status/failure) | ✅ downloaded — 7.8k canonical pages; tabular export 32,323 rows, unclassified |
-| 4 | Combine datasets, event study + SGP4 | ⏳ pending |
-
 ---
 
 ## Table of contents

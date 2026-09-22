@@ -81,9 +81,6 @@ DONKI/OMNI ni lo uses en el análisis causal.
   `/doc_sdat/doc_sdat/<pag>` del sitio).
   Export tabular: `notebooks/02_gunter_tabular.ipynb` (ya ejecutado) →
   `data/gunter/gunter_tabular.parquet`.
-- **Estado actual**: `fetch_omni.py` y `fetch_donki.py` están escritos y
-  validados sintácticamente pero **NO ejecutados**. Gunter's **SÍ** está
-  crawleado (Fase 2 ✅) y exportado a tabla tabular.
 - Credenciales: copiar `.env.example` → `.env` y completar (incluye
   `NASA_API_KEY`).
 - **Atribución Gunter's obligatoria** (robots.txt permite crawlear pero la
@@ -104,18 +101,6 @@ DONKI/OMNI ni lo uses en el análisis causal.
 - **No agregar comentarios** al código salvo que se pidan.
 - Cada fuente vive en su subcarpeta bajo `data/` (`data/gp_history`, después
   `data/omni`, `data/donki`, `data/gunter`).
-
-## Estados del proyecto
-
-1. ✅ Catálogo orbital histórico completo descargado.
-2. ⏳ **OMNI y DONKI listos, descarga pendiente** (OMNI horario 1963+,
-   DONKI núcleo causal). ✅ **Gunter's completo**: crawleado (~7.8k páginas
-   canónicas), tablas/incidents extraídos y `gunter_tabular.parquet`
-   construido (32.323 filas, sin clasificar).
-3. ⏳ Cruzar tormentas (OMNI/DONKI) contra decaimientos (Space-Track) y validar
-   con el caso Starlink feb-2022. La metodología de compaginación (§3 del
-   README) y la visión de predicción/3D (§6 del README) están documentadas
-   pero sin implementar.
 
 ## Decisiones registradas
 
