@@ -82,7 +82,7 @@ year).
 
 ```mermaid
 flowchart LR
-    A[Space-Track gp_history] -->|fetch_gp_history.py| P1[(gp_history/ year=YYYY ✅)]
+    A[Space-Track gp_history] -->|fetch_gp_history.py| P1[(gp_history/ year=YYYY ⚠️)]
     C[OMNI · NASA SPDF HAPI] -->|fetch_omni.py| P2[(omni/ year=YYYY ⏳)]
     E[DONKI · NASA CCMC API] -->|fetch_donki.py| P3[(donki/ endpoint/year ⏳)]
     G[Gunter's Space Page · HTML] -->|fetch_gunter.py| P4[(gunter/ tables, incidents ✅)]
@@ -92,12 +92,12 @@ flowchart LR
     K --> L[Early warning: storms & damage]
     L --> M[3D visualization]
     P4 -.-> N[Narrative spot-check]
-    style P1 fill:#2e7d32,color:#fff
+    style P1 fill:#b71c1c,color:#fff
 ```
 
 | n | Source | Role in the chain | Collector | Artifact | Status |
 |---|--------|-------------------|-----------|----------|--------|
-| 0 | Space-Track `gp_history` | **Effect**: orbital state, drag, decay, re-entry | `fetch_gp_history.py` | `data/gp_history/year=YYYY/` | ✅ |
+| 0 | Space-Track `gp_history` | **Effect**: orbital state, drag, decay, re-entry | `fetch_gp_history.py` | `data/gp_history/year=YYYY/` | ⚠️ missing |
 | 1 | OMNI (NASA SPDF) | **Continuous driver**: solar wind + Dst/Kp/protons | `fetch_omni.py` | `data/omni/year=YYYY/` | ⏳ |
 | 2 | DONKI (NASA CCMC) | **Event framework**: CME/GST/SEP/flares + causal chains | `fetch_donki.py` | `data/donki/<endpoint>/year=YYYY/` | ⏳ |
 | 3 | Gunter's Space Page | **Narrative layer**: per-satellite status & failure cause | `fetch_gunter.py` (+ `02_gunter_tabular.ipynb`) | `data/gunter/{tables,incidents}.parquet` + raw pages + `gunter_tabular.parquet` | ✅ |
@@ -115,10 +115,23 @@ in §4).
 (`MEAN_MOTION` ↑, `PERIAPSIS` ↓, `DECAY_DATE` set on re-entry).
 
 **Access**: Space-Track REST API via the `spacetrack` Python package
-(login + session + rate limiting). Already downloaded locally:
+(login + session + rate limiting). A full download was measured at
 **67.2M element sets, 63,762 distinct objects, 67 years, ~12 GB** in
-455 Parquet parts. This is a "1 / lifetime" dataset: download once, store
-locally, never re-run a full download.
+455 Parquet parts.
+
+> **⚠️ Not present on disk.** `data/gp_history/` was deleted to free space and
+> is **not** recovered. Stage 0 is therefore *pending*, and the §3 pipeline
+> (storm windows, event study, Starlink validation) **cannot run without it**.
+> It is the only source that cannot be re-fetched in a few minutes, so plan
+> for it deliberately:
+>
+> - `python scripts/fetch_gp_history.py --start 2000-01-01` to rebuild a
+>   scoped subset. A narrower `--start` (e.g. the validation cases:
+>   Cosmos-Iridium 2021, Starlink 2022) is far cheaper than the full archive.
+> - Needs `SPACE_TRACK_EMAIL` / `SPACE_TRACK_PASSWORD` in `.env`.
+> - Budget the disk **before** starting: the full archive is ~12 GB, which does
+>   not fit on the Linux root partition. `data/` must be pointed at the
+>   Windows partition for this to work (§2.6).
 
 ### 2.3 Stage 1: OMNI
 
@@ -251,8 +264,8 @@ intentional re-downloads. Add `--help` to any script for the full options
 list. Test runs: `--limit 1` (OMNI/DONKI) or `--max-pages 10` (Gunter's).
 
 ```bash
-# Stage 0 (done): orbital catalog
-python scripts/fetch_gp_history.py
+# Stage 0 (NOT on disk — deleted to free space; scope the date range)
+python scripts/fetch_gp_history.py --start 2000-01-01
 
 # Stage 1: OMNI hourly, 1963 → today
 python scripts/fetch_omni.py
@@ -269,7 +282,7 @@ jupyter nbconvert --to notebook --execute --inplace notebooks/02_gunter_tabular.
 
 | Stage | Command | Needs | Output | Expected volume | Expected runtime |
 |-------|---------|-------|--------|-----------------|------------------|
-| 0 | `fetch_gp_history.py` | Space-Track creds | `data/gp_history/` | ~12 GB | already done |
+| 0 | `fetch_gp_history.py` | Space-Track creds | `data/gp_history/` | ~12 GB (full) | ⚠️ to redo, scoped |
 | 1 | `fetch_omni.py` | none | `data/omni/` | a few hundred MB | minutes–1 h |
 | 2 | `fetch_donki.py` | `NASA_API_KEY` | `data/donki/` | a few MB | minutes |
 | 3a | `fetch_gunter.py` | none | `data/gunter/` (raw pages + tables/incidents) | ~230 MB | already done (~7.8k pages; ~13k URLs discovered, the rest alias) |
@@ -420,10 +433,10 @@ LEO-only, payload-only, decayed objects) can be done later at query time.
 
 ### 4.3 Downloader details
 
-Run with:
+Run with (always scope `--start`; the full archive is ~12 GB — §4.8):
 
 ```bash
-python scripts/fetch_gp_history.py
+python scripts/fetch_gp_history.py --start 2000-01-01
 ```
 
 - **Login and session** — `SpaceTrackClient(identity, password)` logs in
@@ -668,8 +681,9 @@ letters/blanks/`.`/`+` and 1 to `-`).
 ### 4.8 Considerations, rate limits and policy
 
 - **Volume**: the full archive is **~138M+ element sets** → dozens of GB of
-  Parquet, and a download that may take **hours to a few days**. The current
-  local download is **67.2M rows / ~12 GB**.
+  Parquet, and a download that may take **hours to a few days**. A previously
+  completed run measured **67.2M rows / ~12 GB** — that copy is no longer on
+  disk (see §2.2), so expect to spend that budget again.
 - **API throttle**: Space-Track limits you to **<30 requests/minute** and
   **<300 requests/hour**. The `spacetrack` client enforces the per-minute
   limit; the script is designed so the total request count stays well below
@@ -814,7 +828,8 @@ Candidate tooling: `plotly` (Python, easy 3D scatter + slider) and/or
 
 ### 6.4 Roadmap and caveats
 
-1. ✅ Stage 0 data (`gp_history`) — done.
+1. ⚠️ Stage 0 data (`gp_history`) — **not on disk**; re-fetch scoped
+   (see §2.2). Blocks §3.
 2. ⏳ Stages 1–2 data (OMNI/DONKI) — collectors ready, run them (§2.6).
    ✅ Stage 3 (Gunter's) — crawled, tabular export built (unclassified).
 3. ⏳ §3 pipeline — storm windows, SGP4, event study, Starlink validation.
@@ -834,7 +849,8 @@ batch data today. SGP4-based positions carry the TLE-age error discussed in
 ### Requirements
 
 - Python **3.10+** (the repo pins 3.14).
-- A registered, approved **Space-Track.org account** (Stage 0; already spent).
+- A registered, approved **Space-Track.org account** (Stage 0; the
+  credentials in `.env` are currently absent — see §7).
 - A free **NASA API key** (Stage 2, DONKI). The server ships a `DEMO_KEY`
   fallback, but it is heavily rate-limited.
 - Enough disk space for the full history (see
@@ -881,7 +897,7 @@ cme-sentinel/
 │   └── proceso_extraccion_gunter.md  # step-by-step account of the Gunter's extraction
 ├── requirements.txt          # Python dependencies
 ├── scripts/
-│   ├── fetch_gp_history.py  # Stage 0: orbital catalog (already run)
+│   ├── fetch_gp_history.py  # Stage 0: orbital catalog (missing on disk)
 │   ├── fetch_omni.py        # Stage 1: OMNI hourly solar wind & indices (ready, not run)
 │   ├── fetch_donki.py       # Stage 2: DONKI events (ready, needs NASA_API_KEY)
 │   ├── fetch_gunter.py      # Stage 3a: Gunter's full-site crawl (already run)
@@ -890,7 +906,7 @@ cme-sentinel/
 │   └── 02_gunter_tabular.ipynb        # Gunter's wide tabular export (run)
 └── data/
     ├── .progress.json       # download progress (git-ignored)
-    ├── gp_history/          # Stage 0 ✅ (git-ignored)
+    ├── gp_history/          # Stage 0 ⚠️ missing (git-ignored)
     ├── omni/                # Stage 1 (git-ignored)
     ├── donki/               # Stage 2 (git-ignored)
     └── gunter/              # Stage 3 ✅ (git-ignored)

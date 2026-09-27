@@ -26,7 +26,7 @@ Cadena física (el modelo mental de todo el proyecto):
 
 | Fuente | Rol en la cadena | Estado |
 |---|---|---|
-| Space-Track `gp_history` | Efecto (órbita/decaimiento) | ✅ Descargado (`data/gp_history`) |
+| Space-Track `gp_history` | Efecto (órbita/decaimiento) | ⚠️ **NO en disco** (se borró para liberar espacio). Re-descargar **acotado** con `--start` |
 | OMNI (NASA GSFC) | Driver continuo + Dst/Kp/protones | ✅ Script listo, **sin descargar** (`scripts/fetch_omni.py`, HAPI `cdaweb.gsfc.nasa.gov/hapi`, dataset `OMNI_COHO1HR_MERGED_MAG_PLASMA`) |
 | DONKI (NASA CCMC) | Eventos discretos (CME/GST/SEP/flares/HSS) | ✅ Script listo, **sin descargar** (`scripts/fetch_donki.py`; requiere `NASA_API_KEY`) |
 | Gunter's Space Page | Estado/falla por satélite — capa narrativa extra | ✅ Descargado (`data/gunter`), ver `fetch_gunter.py` |
@@ -73,8 +73,10 @@ DONKI/OMNI ni lo uses en el análisis causal.
 ## Comandos
 
 - Setup: `python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt`
-- Descarga orbital: `python scripts/fetch_gp_history.py` — resume automático;
-  `--limit 5` para pruebas; `--reset` solo intencional (clase "1 / lifetime").
+- Descarga orbital: `python scripts/fetch_gp_history.py --start 2000-01-01` —
+  **siempre acotar `--start`**: el archivo completo son ~12 GB y no entra en la
+  partición raíz. Resume automático; `--limit 5` para pruebas; `--reset` solo
+  intencional (clase "1 / lifetime").
 - OMNI: `python scripts/fetch_omni.py` (`--limit 1` para probar). Sin key.
 - DONKI: `python scripts/fetch_donki.py` (`--endpoints GST,SEP` para probar).
   Requiere `NASA_API_KEY`.
@@ -124,8 +126,11 @@ DONKI/OMNI ni lo uses en el análisis causal.
 
 ## Política de datos
 
-- Space-Track `GP_HISTORY` es clase "1 / lifetime": descargar una vez y
-  guardar local; no re-ejecutar descargas completas.
+- Space-Track `GP_HISTORY` es clase "1 / lifetime": el archivo completo son
+  ~12 GB y **no entra** en la partición raíz de Linux (56 GB, 98% lleno). Va
+  acotado por fechas (`--start`) y su destino es `data/`, que debe apuntar a
+  la partición de Windows. Antes de descargar: reservar el disco, no asumir
+  que "ya está".
 - USSPACECOM permite redistribución de datos SSA básicos citando
   `USSPACECOM/18 SDS`.
 - Todos los timestamps son **UTC**.
