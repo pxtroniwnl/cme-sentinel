@@ -27,7 +27,7 @@ Cadena física (el modelo mental de todo el proyecto):
 | Fuente | Rol en la cadena | Estado |
 |---|---|---|
 | Space-Track `gp_history` | Efecto (órbita/decaimiento) | ⚠️ **NO en disco** (se borró para liberar espacio). Re-descargar **acotado** con `--start` |
-| OMNI (NASA GSFC) | Driver continuo + Dst/Kp/protones | ✅ Script listo, **sin descargar** (`scripts/fetch_omni.py`, HAPI `cdaweb.gsfc.nasa.gov/hapi`, dataset `OMNI_COHO1HR_MERGED_MAG_PLASMA`) |
+| OMNI (NASA GSFC) | Driver continuo + SYM-H/AE/protones | ✅ Descargado 2012-01-01 → 2026-09-03, 128.617 filas horarias, 20 MB (`scripts/fetch_omni.py`, HAPI `cdaweb.gsfc.nasa.gov/hapi`, dataset `OMNI_HRO_5MIN`). Diccionario: `docs/datos_omni.md` |
 | DONKI (NASA CCMC) | Eventos discretos (CME/GST/SEP/flares/HSS) | ✅ Script listo, **sin descargar** (`scripts/fetch_donki.py`; requiere `NASA_API_KEY`) |
 | Gunter's Space Page | Estado/falla por satélite — capa narrativa extra | ✅ Descargado (`data/gunter`), ver `fetch_gunter.py` |
 | ESA Anomaly Dataset | Benchmark de telemetría — **fuera de la correlación causal** | 📄 Solo documentado |
@@ -49,6 +49,8 @@ DONKI/OMNI ni lo uses en el análisis causal.
 - `docs/datos_gunter.md` — diccionario de datos y estadísticas de los
   artefactos en `data/gunter` (`tables`, `incidents`, `gunter_tabular`,
   `meta/pages`, `pages/`).
+- `docs/datos_omni.md` — diccionario de columnas de `data/omni`, regla de
+  agregación 5 min → horario, tabla de fill values y validación ejecutada.
 - `scripts/fetch_gp_history.py` — descargador del catálogo orbital; es el
   **patrón de estilo** que deben seguir los futuros descargadores.
 - `scripts/fetch_omni.py` — OMNI horario 1963+ vía HAPI (público, sin key).
@@ -77,7 +79,9 @@ DONKI/OMNI ni lo uses en el análisis causal.
   **siempre acotar `--start`**: el archivo completo son ~12 GB y no entra en la
   partición raíz. Resume automático; `--limit 5` para pruebas; `--reset` solo
   intencional (clase "1 / lifetime").
-- OMNI: `python scripts/fetch_omni.py` (`--limit 1` para probar). Sin key.
+- OMNI: `python scripts/fetch_omni.py --start 2012-01-01` (`--limit 1` para
+  probar). Sin key. Ya ejecutado para 2012→2026; para 1963+ extendé el
+  `--start` (el resume por año saltea lo ya bajado).
 - DONKI: `python scripts/fetch_donki.py` (`--endpoints GST,SEP` para probar).
   Requiere `NASA_API_KEY`.
 - Gunter's: `python scripts/fetch_gunter.py` (`--max-pages 100 --delay 2.0`
@@ -116,6 +120,34 @@ DONKI/OMNI ni lo uses en el análisis causal.
   feb-2022 como validación canónica.
 - **Gunter's = capa narrativa** extra (fechas gruesas, causa en prosa): fuera
   del event study, solo validación puntual.
+- Gotcha OMNI: **en OMNI no hay `Dst` ni `Kp`**. Los índices disponibles son
+  `SYM_H`/`SYM_D` (corriente en anillo; `SYM_H` reemplaza a `Dst` pero **no** es
+  numéricamente comparable) y `AE_INDEX`/`AL_INDEX`/`AU_INDEX`. Solo 3 canales
+  de protones (10/30/60 MeV), y con **44,6% de nulos** (nulo = sin dato de
+  evento, no flujo cero). Los umbrales de tormenta del §3.2 son
+  `SYM_H ≤ −50 nT` **o** `AE_INDEX_max ≥ 1000 nT`.
+- Gotcha OMNI: el CSV de HAPI **no trae fila de encabezado** — hay que pasar
+  `header=None, names=<los nombres de /info>`. Sin eso, la primera fila de
+  datos se vuelve el nombre de las columnas y el Parquet queda corrupto en
+  silencio. El colector aborta si no logra enumerar `/info`.
+- Gotcha OMNI: los fills de `OMNI_HRO_5MIN` son centinelas **pequeños por
+  parámetro** (99.99 en `Pressure`, 99999.9 en `flow_speed`, 99999 en `SYM_H`,
+  …), no `-1e31`. Se toman del campo `fill` de `HAPI /info`; un umbral `1e20`
+  no los captura.
+- Gotcha OMNI: `--parameters` está atado al orden de `/info`. HAPI devuelve
+  solo lo pedido (hay que incluir `Time` explícitamente o no hay eje temporal) y
+  rechaza subconjuntos desordenados con **error 1411 `Parameter out of order`**
+  *devuelto con HTTP 200*. El colector reordena el subconjunto según `/info`.
+  Además **no sobrescribe** una partición completa con un fetch de menos
+  columnas sin `--reset`: sin ese guard una prueba con `--parameters SYM_H`
+  borra en silencio las otras 45 columnas del año.
+- Gotcha OMNI: las columnas con extremo horario llevan sufijo (`BZ_GSM_max`,
+  `AE_INDEX_max`, `PR-FLX_10_max`); `SYM_H`/`SYM_D` son `min` sin sufijo. El
+  mapeo es **posicional** según el orden de `/info`: un corrimiento de columnas
+  no daría error visible, así que hay que revalidar contra valores conocidos
+  (mínimos anuales de `SYM_H`) si se toca el dataset o el script.
+- Gotcha OMNI: la cobertura del servidor llega ~24 días antes de la fecha de
+  consulta (parada en 2026-09-03). Re-correr el colector completa 2026.
 - Gotcha: en los parquet de `gp_history`, `DECAY_DATE` activo es `""` (no
   `NaN`) → filtrar con `.astype(str).ne("")`.
 - Gotcha Gunter's: el sitio sirve **alias duplicados** `/doc_sdat/doc_sdat/<pag>.htm`

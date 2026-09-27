@@ -2,29 +2,49 @@
 fetch_omni.py
 =============
 
-Download the hourly OMNI merged solar-wind / magnetosphere dataset from
-NASA GSFC SPDF (dataset OMNI_COHO1HR_MERGED_MAG_PLASMA, 1963 -> today)
-through the HAPI protocol and save it as Apache Parquet partitioned by year.
+Download the OMNI merged solar-wind / magnetosphere dataset from NASA GSFC
+SPDF (dataset OMNI_HRO_5MIN) through the HAPI protocol and save it as
+Apache Parquet partitioned by year.
 
 Scope
 -----
-* One row per hour: 1963-01-01 -> today (~565,000 rows).
-* The dataset carries the IMF (BX_GSE, BY_GSM, BZ_GSM, BGT), solar wind
-  (flow_speed, proton_density, proton_temperature, flow_pressure),
-  geomagnetic indices (DST, Kp, Sunspot_Number, AE/AL/AU, ap, F10_INDEX)
-  and energetic proton fluxes (>1/>2/>4/>10/>30/>60 MeV). The exact
-  parameter set is enumerated at runtime from the HAPI /info endpoint and
-  logged; when no explicit --parameters list is given every parameter of
-  the dataset is fetched.
+* One row per hour, resampled from the native 5-minute cadence. The
+  project analyzes storm windows (hours to days), so hourly is the target
+  resolution; keeping 5-minute rows for decades would be ~23M rows for
+  15 years with no analytical gain.
+* What this dataset actually carries (verified against HAPI /info, 45
+  parameters): IMF in GSE and GSM (BX_GSE, BY_GSE, BZ_GSE, BY_GSM,
+  BZ_GSM), solar wind (flow_speed, proton_density, T, Pressure), electric
+  field, plasma beta, Mach numbers, GSM position, geomagnetic indices
+  (AE_INDEX, AL_INDEX, AU_INDEX, SYM_D, SYM_H, ASY_D, ASY_H,
+  PC_N_INDEX) and three energetic-proton channels (PR-FLX_10, PR-FLX_30,
+  PR-FLX_60 MeV).
+* It does **not** carry Dst, Kp, ap, sunspot number or F10.7. SYM_H is
+  the modern successor of Dst (ring-current index) and is the storm
+  driver used downstream; AE_INDEX covers the Kp-like "how disturbed"
+  role. The exact parameter set is enumerated at runtime from the HAPI
+  /info endpoint and logged.
 
 How it works
 ------------
 1. Queries HAPI `/info` to enumerate the dataset parameters.
 2. Splits the requested range into calendar-year windows.
 3. Fetches each window once with `format=csv` and writes
-   `data/omni/year=YYYY/part-00000.parquet`.
-4. HAPI fill values (large negative numbers such as -1e31, used across the
-   OMNI archive) are converted to NaN.
+   `data/omni/year=YYYY/part-00000.parquet`, resampled to hourly.
+4. HAPI fill values are converted to NaN. `OMNI_HRO_5MIN` uses small
+   per-parameter sentinels (99999.9 in `flow_speed`, 99999 in `SYM_H`, 99.99
+   in `Pressure`, ...), not the -1e31 of the COHO series, so the exact
+   value declared in the `fill` field of `/info` is used per column.
+
+Hourly aggregation rule
+-----------------------
+5-minute samples are reduced to hourly with an explicit per-column rule,
+because the average hides the physically relevant extreme in three cases:
+mean for the continuous fields, `min` for the ring-current indices
+(SYM_H/SYM_D, the storm minimum) and `max` for BZ_GSM (the southward IMF
+excursion that drives coupling) and the proton fluxes (SEP peak). Columns
+carrying such an extreme get an explicit `_min`/`_max` suffix, so the
+aggregation is never ambiguous downstream.
 
 Resume support
 --------------
@@ -59,13 +79,24 @@ OUT_DIR = DATA_DIR / "omni"
 PROGRESS_FILE = DATA_DIR / ".progress.json"
 
 HAPI_BASE = "https://cdaweb.gsfc.nasa.gov/hapi"
-DATASET_ID = "OMNI_COHO1HR_MERGED_MAG_PLASMA"
+DATASET_ID = "OMNI_HRO_5MIN"
 
 DEFAULT_START = datetime(1963, 1, 1, tzinfo=timezone.utc)
 
 MAX_RETRIES = 3
 DEFAULT_MIN_INTERVAL = 3.0
 FILL_THRESHOLD = 1e20
+
+# Columns whose hourly aggregate is the extreme, not the mean. The
+# ring-current index is quoted by its minimum (storm depth), the southward
+# IMF by its most negative excursion (coupling driver) and the SEP
+# channels by their peak (event severity).
+AGG_MIN = ("SYM_H", "SYM_D", "ASY_H", "ASY_D")
+AGG_MAX = ("BZ_GSM", "AE_INDEX", "AL_INDEX", "AU_INDEX", "PC_N_INDEX") + (
+    "PR-FLX_10",
+    "PR-FLX_30",
+    "PR-FLX_60",
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -121,15 +152,41 @@ def hapi_get(
     raise RuntimeError(f"GET {HAPI_BASE}{path} failed after {MAX_RETRIES} retries")
 
 
-def enumerate_parameters(session: requests.Session, min_interval: float) -> list[str]:
+def enumerate_parameters(
+    session: requests.Session, min_interval: float
+) -> dict[str, float | None]:
     resp = hapi_get(session, "/info", {"id": DATASET_ID}, min_interval)
     parameters = resp.json().get("parameters", [])
-    if isinstance(parameters, list):
-        return [p.get("name") for p in parameters if isinstance(p, dict)]
-    return []
+    spec: dict[str, float | None] = {}
+    for item in parameters:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name")
+        if not name:
+            continue
+        fill = item.get("fill")
+        try:
+            spec[name] = float(fill) if fill is not None else None
+        except (TypeError, ValueError):
+            spec[name] = None
+    return spec
 
 
-def normalize_dtypes(df: pd.DataFrame, year: int) -> pd.DataFrame:
+def hourly_agg_funcs(columns: list[str]) -> dict[str, str]:
+    funcs: dict[str, str] = {}
+    for col in columns:
+        if col in AGG_MIN:
+            funcs[col] = "min"
+        elif col in AGG_MAX:
+            funcs[col] = "max"
+        else:
+            funcs[col] = "mean"
+    return funcs
+
+
+def normalize_dtypes(
+    df: pd.DataFrame, fills: dict[str, float | None] | None = None
+) -> pd.DataFrame:
     if "Time" in df.columns:
         df["EPOCH"] = pd.to_datetime(df.pop("Time"), errors="coerce", utc=True)
     for col in df.columns:
@@ -137,13 +194,32 @@ def normalize_dtypes(df: pd.DataFrame, year: int) -> pd.DataFrame:
             continue
         numeric = pd.to_numeric(df[col], errors="coerce")
         if numeric.notna().any():
-            df[col] = numeric.mask(numeric.abs() > FILL_THRESHOLD)
-    df["year"] = year
+            masked = numeric.mask(numeric.abs() > FILL_THRESHOLD)
+            fill = (fills or {}).get(col)
+            if fill is not None:
+                masked = masked.mask(numeric == fill)
+            df[col] = masked
     return df
 
 
+def resample_hourly(df: pd.DataFrame) -> pd.DataFrame:
+    if "EPOCH" not in df.columns:
+        raise ValueError("OMNI payload has no Time column; cannot build EPOCH.")
+    if df.empty or df["EPOCH"].isna().all():
+        return pd.DataFrame()
+    funcs = hourly_agg_funcs([c for c in df.columns if c != "EPOCH"])
+    out = df.dropna(subset=["EPOCH"]).set_index("EPOCH").resample("1h").agg(funcs)
+    out = out.rename(columns={c: f"{c}_max" for c in AGG_MAX if c in out.columns})
+    return out.dropna(how="all").reset_index()
+
+
 def fetch_year(
-    session: requests.Session, year: int, parameters: list[str], min_interval: float
+    session: requests.Session,
+    year: int,
+    parameters: list[str],
+    min_interval: float,
+    fills: dict[str, float | None] | None = None,
+    allow_narrow: bool = False,
 ) -> int:
     start = datetime(year, 1, 1, tzinfo=timezone.utc)
     end = datetime(year, 12, 31, 23, 59, 59, tzinfo=timezone.utc)
@@ -159,6 +235,8 @@ def fetch_year(
     resp = hapi_get(session, "/data", params, min_interval)
     df = pd.read_csv(
         io.StringIO(resp.text),
+        header=None,
+        names=parameters or None,
         comment="#",
         skipinitialspace=True,
         dtype=str,
@@ -167,26 +245,41 @@ def fetch_year(
     if df.empty:
         LOG.info("  year %d empty", year)
         return 0
-    df = normalize_dtypes(df, year)
+    df = normalize_dtypes(df, fills)
+    df = resample_hourly(df)
+    df["year"] = year
     year_dir = OUT_DIR / f"year={year}"
     year_dir.mkdir(parents=True, exist_ok=True)
     path = year_dir / "part-00000.parquet"
+    if path.exists():
+        # A --parameters run fetches a column subset. Writing it over a
+        # full partition would silently drop the other columns, so require an
+        # explicit --reset before narrowing an existing year.
+        prev = pd.read_parquet(path)
+        if not allow_narrow and len(prev.columns) > len(df.columns):
+            raise RuntimeError(
+                f"refusing to overwrite {path} ({len(prev.columns)} columns) with a "
+                f"{len(df.columns)}-column fetch; re-run with --reset to replace it"
+            )
     df.to_parquet(path, engine="pyarrow", index=False)
-    LOG.info("  OK: %d rows -> %s", len(df), path)
+    LOG.info("  OK: %d hourly rows -> %s", len(df), path)
     return len(df)
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Download the hourly OMNI merged dataset (1963 -> today) as "
-            "Parquet files partitioned by year."
+            "Download the OMNI merged solar-wind/magnetosphere dataset "
+            "(OMNI_HRO_5MIN) from NASA GSFC SPDF and store it resampled to "
+            "hourly as Parquet files partitioned by year."
         )
     )
     parser.add_argument(
         "--start",
         default=DEFAULT_START.strftime("%Y-%m-%d"),
-        help="Start date (YYYY-MM-DD, UTC). Default: 1963-01-01.",
+        help="Start date (YYYY-MM-DD, UTC). Default: 1963-01-01 (the dataset "
+        "start; the project currently holds 2012-01-01 -> 2026-09-03, so pass "
+        "--start 2012-01-01 to only extend that range).",
     )
     parser.add_argument(
         "--end",
@@ -236,16 +329,39 @@ def main(argv: Sequence[str] | None = None) -> int:
     session = requests.Session()
     session.headers.update({"User-Agent": "cme-sentinel/0.1 (research download)"})
 
-    parameters: list[str] = []
+    try:
+        spec = enumerate_parameters(session, args.min_interval)
+    except Exception as exc:  # noqa: BLE001
+        LOG.error("Could not enumerate parameters from HAPI /info: %s", exc)
+        LOG.error(
+            "The HAPI CSV payload carries no header row, so the column names "
+            "must come from /info. Refusing to write a Parquet whose columns "
+            "would be the first data row."
+        )
+        return 1
+    if not spec:
+        LOG.error("HAPI /info returned no parameters for %s.", DATASET_ID)
+        return 1
+
+    parameters: list[str] = list(spec)
     if args.parameters:
-        parameters = [p.strip() for p in args.parameters.split(",") if p.strip()]
-    else:
-        try:
-            parameters = enumerate_parameters(session, args.min_interval)
-            shown = ", ".join(parameters[:10]) + ("..." if len(parameters) > 10 else "")
-            LOG.info("Dataset parameters (%d): %s", len(parameters), shown)
-        except Exception as exc:  # noqa: BLE001
-            LOG.warning("Could not enumerate parameters (%s); fetching all columns.", exc)
+        wanted = [p.strip() for p in args.parameters.split(",") if p.strip()]
+        unknown = [p for p in wanted if p not in spec]
+        if unknown:
+            LOG.error("Unknown --parameters for %s: %s", DATASET_ID, unknown)
+            return 1
+        # HAPI only returns the requested subset, and the time axis is not
+        # included unless asked for, so request it explicitly. HAPI rejects a
+        # subset that is not in the dataset's native order (error 1411), so
+        # the selection is re-expanded in /info order. Time is dropped in
+        # normalize_dtypes() and never reaches the Parquet.
+        selection = set(wanted) | {"Time"}
+        parameters = [name for name in spec if name in selection]
+    fills = {name: spec[name] for name in parameters}
+
+    shown = ", ".join(parameters[:10]) + ("..." if len(parameters) > 10 else "")
+    LOG.info("Dataset: %s", DATASET_ID)
+    LOG.info("Parameters (%d): %s", len(parameters), shown)
 
     processed = 0
     for year in range(start.year, end.year + 1):
@@ -258,7 +374,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             processed += 1
             continue
         try:
-            rows = fetch_year(session, year, parameters, args.min_interval)
+            rows = fetch_year(
+                session, year, parameters, args.min_interval, fills, args.reset
+            )
             completed.add(key)
             save_progress(completed)
             processed += 1

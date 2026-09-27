@@ -60,7 +60,7 @@ sobre un satélite:
 
 | Vía | Cadena | Observable en el catálogo |
 |-----|--------|---------------------------|
-| Decaimiento orbital | CME → llega a la Tierra → **tormenta geomagnética** (Dst ↓, Kp ↑) → **calentamiento de la termósfera / densidad ↑** → **drag** ↑ → **decaimiento orbital** | `MEAN_MOTION` ↑, `PERIAPSIS` ↓, `DECAY_DATE` seteado (reentrada) |
+| Decaimiento orbital | CME → llega a la Tierra → **tormenta geomagnética** (Dst ↓, Kp ↑; en nuestros datos proxied por SYM-H ↓, AE ↑ — §2.3) → **calentamiento de la termósfera / densidad ↑** → **drag** ↑ → **decaimiento orbital** | `MEAN_MOTION` ↑, `PERIAPSIS` ↓, `DECAY_DATE` seteado (reentrada) |
 | Falla electrónica | CME / SEP → **partículas solares energéticas** llegan a órbita → daño por radiación, **single-event upsets** | anomalías de telemetría / pérdida de señal (no visible en TLEs solos) |
 
 El caso de validación canónico de todo el pipeline es el **lote de Starlink
@@ -83,7 +83,7 @@ en Parquet particionado por año).
 ```mermaid
 flowchart LR
     A[Space-Track gp_history] -->|fetch_gp_history.py| P1[(gp_history/ year=YYYY ⚠️)]
-    C[OMNI · NASA SPDF HAPI] -->|fetch_omni.py| P2[(omni/ year=YYYY ⏳)]
+    C[OMNI · NASA SPDF HAPI] -->|fetch_omni.py| P2[(omni/ 2012→2026 ✅)]
     E[DONKI · API de NASA CCMC] -->|fetch_donki.py| P3[(donki/ endpoint/year ⏳)]
     G[Gunter's Space Page · HTML] -->|fetch_gunter.py| P4[(gunter/ tables, incidents ✅)]
     P1 & P2 & P3 --> I[Alinear y construir ventanas de tormenta]
@@ -98,7 +98,7 @@ flowchart LR
 | n | Fuente | Rol en la cadena | Colector | Artefacto | Estado |
 |---|--------|------------------|----------|-----------|--------|
 | 0 | Space-Track `gp_history` | **Efecto**: estado orbital, drag, decaimiento, reentrada | `fetch_gp_history.py` | `data/gp_history/year=YYYY/` | ⚠️ falta |
-| 1 | OMNI (NASA SPDF) | **Driver continuo**: viento solar + Dst/Kp/protones | `fetch_omni.py` | `data/omni/year=YYYY/` | ⏳ |
+| 1 | OMNI (NASA SPDF) | **Driver continuo**: viento solar + SYM-H/AE/protones | `fetch_omni.py` | `data/omni/year=YYYY/` | ✅ 2012→2026-09 |
 | 2 | DONKI (NASA CCMC) | **Marco de eventos**: CME/GST/SEP/flares + cadenas causales | `fetch_donki.py` | `data/donki/<endpoint>/year=YYYY/` | ⏳ |
 | 3 | Gunter's Space Page | **Capa narrativa**: estado/falla por satélite | `fetch_gunter.py` (+ `02_gunter_tabular.ipynb`) | `data/gunter/{tables,incidents}.parquet` + páginas crudas + `gunter_tabular.parquet` | ✅ |
 
@@ -137,31 +137,58 @@ partes Parquet.
 ### 2.3 Etapa 1: OMNI
 
 **Fuente**: NASA GSFC Space Physics Data Facility, servidor HAPI de CDAWeb,
-dataset `OMNI_COHO1HR_MERGED_MAG_PLASMA`
+dataset **`OMNI_HRO_5MIN`**
 (https://cdaweb.gsfc.nasa.gov/hapi) — DOI `10.48322/6ffx-3441`
-(King & Papitashvili). Datos abiertos, CC0, sin clave.
+(King & Papatashvili). Datos abiertos, CC0, sin clave.
 
-**Qué aporta**: 1 fila por hora, **1963 → hoy** (~565,000 filas) — la
-respuesta geomagnética/espacial continua que impulsa la vía del decaimiento
-orbital. FMI (Bx/Bz/Bt), viento solar (velocidad, densidad, temperatura,
-presión), índices (Dst, Kp, AE/AL/AU, ap, número de manchas solares, F10.7)
-y flujos de protones energéticos (>1/>2/>4/>10/>30/>60 MeV):
+**Qué aporta**: **2012-01-01 → 2026-09-03**, una fila por hora
+(**128.617 filas, 46 columnas, ~20 MB**) en
+`data/omni/year=YYYY/part-00000.parquet`. La cadencia nativa de OMNI es de
+5 minutos; el colector remuestrea a horario en el ingest (las ventanas de
+tormenta son de horas a días, así que guardar 5 min serían ~23 M de filas
+para 15 años sin ganancia analítica).
 
-| EPOCH | BZ_GSM (nT) | BGT (nT) | flow_speed (km/s) | proton_density (#/cm³) | DST (nT) | Kp | AE_INDEX (nT) | P<10MeV_flux |
-|---|---|---|---|---|---|---|---|---|
-| 2022-02-03 11:00 | −8.2 | 12.5 | 615 | 7.4 | −42 | 37 | 618 | 0.02 |
-| 2022-02-03 12:00 | −15.4 | 18.9 | 689 | 9.1 | −85 | 57 | 1248 | 0.04 |
-| 2022-02-03 13:00 | −19.8 | 22.1 | 702 | 10.2 | −112 | 73 | 1866 | 0.03 |
+Lo que el dataset aporta realmente (verificado contra `HAPI /info`, 45
+parámetros): FMI en GSE y GSM (`BX_GSE`, `BY_GSE`, `BZ_GSE`, `BY_GSM`,
+`BZ_GSM`), viento solar (`flow_speed`, `Vx/Vy/Vz`, `proton_density`, `T`,
+`Pressure`), campo eléctrico, `Beta` del plasma, números de Mach, posición
+del bow shock en GSM, índices geomagnéticos (`AE_INDEX`, `AL_INDEX`,
+`AU_INDEX`, `SYM_H`, `SYM_D`, `ASY_H`, `ASY_D`, `PC_N_INDEX`) y tres canales
+de protones energéticos (`PR-FLX_10`, `PR-FLX_30`, `PR-FLX_60` MeV):
 
-*Filas ilustrativas; el conjunto exacto de parámetros se resuelve en runtime
-desde el endpoint `/info` de HAPI.*
+| EPOCH | BZ_GSM_max (nT) | flow_speed (km/s) | proton_density (cm⁻³) | SYM_H (nT) | AE_INDEX_max (nT) | PR-FLX_10_max (pfu) |
+|---|---|---|---|---|---|---|
+| 2022-02-03 09:00 | −16.80 | 493.0 | 2.4 | −68 | 1445 | NaN |
+| 2022-02-03 12:00 | +12.28 | 510.6 | 14.5 | −70 | 395 | NaN |
+| 2022-02-04 12:00 | −4.77 | 510.7 | 3.3 | −57 | 1031 | NaN |
+
+*Filas reales de `data/omni/year=2022`, durante la CME que perdió ~40
+Starlink. `NaN` en el canal de protones significa "sin dato de evento SEP",
+no flujo cero (el 44,6% de las filas es nulo ahí).*
+
+> **⚠️ En OMNI no hay `Dst` ni `Kp`.** La versión anterior de esta sección
+> afirmaba Dst, Kp, ap, número de manchas solares, F10.7 y seis canales de
+> protones — ninguno de esos está en este dataset. Qué los reemplaza:
+>
+> - **`SYM_H`** (índice de corriente en anillo, sucesor moderno de `Dst`) es el
+>   driver de tormenta que se usa aguas abajo. **No** es numéricamente
+>   comparable con valores publicados de `Dst` — ver
+>   [`docs/datos_omni.md`](docs/datos_omni.md) §6.
+> - **`AE_INDEX`** cubre el rol de "qué tan alterada está" que tenía `Kp`.
+> - Solo **tres** canales de protones (10/30/60 MeV), no seis.
+> - Si se necesita `Kp` real hay que traerlo de otra fuente (p. ej. GFZ
+>   Potsdam); no está en `data/omni`.
 
 **Por qué esta fuente**: OMNI es el dataset estándar 'L1-monopole' de la
 comunidad de clima espacial: traslada las mediciones del viento solar a la
-nariz del bow-shock terrestre y cose los índices definitivos de **Dst**,
-**Kp** y **flujo de protones** en la misma grilla horaria — una sola tabla
-contra la cual unir todo. También es la **señal de entrenamiento para la
-predicción de tormentas** (§6.1).
+nariz del bow-shock terrestre y cose los índices definitivos de **corriente en
+anillo**, **auroral** y **flujo de protones** en la misma grilla horaria —
+una sola tabla contra la cual unir todo. También es la **señal de
+entrenamiento para la predicción de tormentas** (§6.1).
+
+Ver [`docs/datos_omni.md`](docs/datos_omni.md) para el diccionario completo de
+columnas, la regla de agregación 5 min → horario, la tabla de fill values por
+parámetro y la validación ejecutada.
 
 ### 2.4 Etapa 2: DONKI
 
@@ -273,8 +300,8 @@ opciones completas. Pruebas: `--limit 1` (OMNI/DONKI) o `--max-pages 10`
 # Etapa 0 (NO en disco — acotar el rango de fechas)
 python scripts/fetch_gp_history.py --start 2000-01-01
 
-# Etapa 1: OMNI horario, 1963 → hoy
-python scripts/fetch_omni.py
+# Etapa 1: OMNI horario, 2012 → hoy (extendé con --start para 1963+)
+python scripts/fetch_omni.py --start 2012-01-01
 
 # Etapa 2: eventos DONKI, 2010 → hoy (requiere NASA_API_KEY)
 python scripts/fetch_donki.py
@@ -289,7 +316,7 @@ jupyter nbconvert --to notebook --execute --inplace notebooks/02_gunter_tabular.
 | Etapa | Comando | Necesita | Salida | Volumen esperado | Tiempo esperado |
 |-------|---------|----------|--------|------------------|-----------------|
 | 0 | `fetch_gp_history.py` | credenciales Space-Track | `data/gp_history/` | ~12 GB (completo) | ⚠️ rehacer, acotado |
-| 1 | `fetch_omni.py` | nada | `data/omni/` | unos cientos de MB | minutos–1 h |
+| 1 | `fetch_omni.py` | nada | `data/omni/` | **20 MB** | **hecho** (5 min, 15 ñ 2012–2026) |
 | 2 | `fetch_donki.py` | `NASA_API_KEY` | `data/donki/` | unos pocos MB | minutos |
 | 3a | `fetch_gunter.py` | nada | `data/gunter/` (páginas crudas + tables/incidents) | ~230 MB | ya hecho (~7.8k páginas; ~13k URLs descubiertas, el resto son alias) |
 | 3b | `02_gunter_tabular.ipynb` (nbconvert) | lee salida de 3a | `data/gunter/gunter_tabular.parquet` (+ CSV) | 8 MB / 69 MB | minutos |
@@ -328,11 +355,13 @@ después un puente exacto de objetos.
 ### 3.2 Construcción de las ventanas de evento
 
 1. **Catálogo de tormentas desde OMNI** — marcar cada fila horaria como
-   tormentosa si `DST ≤ −50 nT` (umbral de tormenta magnética) **o**
-   `Kp ≥ 5` (nivel G-tormenta); agrupar horas tormentosas contiguas en
-   eventos (duración mínima 3 h, tolerancia de hueco 6 h). Cada evento
-   recibe `storm_id`, `storm_start`, `storm_peak` (hora de Dst mín / Kp
-   máx), `dst_min`, `kp_max`.
+   tormentosa si `SYM_H ≤ −50 nT` (umbral de tormenta magnética) **o**
+   `AE_INDEX_max ≥ 1000 nT` (perturbación clase G2/G3); agrupar horas
+   tormentosas contiguas en eventos (duración mínima 3 h, tolerancia de hueco
+   6 h). Cada evento recibe `storm_id`, `storm_start`, `storm_peak` (hora de
+   SYM_H mín / AE máx), `sym_h_min`, `ae_max`.
+   *(En OMNI no hay `Dst`/`Kp` — ver §2.3. La regla original `Dst ≤ −50` **o**
+   `Kp ≥ 5` se reemplaza por los umbrales equivalentes SYM-H/AE.)*
 2. **Plegar la atribución DONKI** — empalmar cada tormenta OMNI con un GST
    de DONKI por `startTime` en **±24 h**; luego seguir los
    `linked_activity_ids` del GST hasta la(s) **CME(s) padre** (cono 3D:
@@ -354,7 +383,7 @@ después un puente exacto de objetos.
    Registrar `propagator_age_days` (el error de SGP4 crece con la edad del
    TLE; Starlink actualiza TLEs ~6×/día, los objetos viejos mucho menos).
 6. **Event study poblacional** — OLS de efectos fijos (objeto × tormenta) de
-   las features de respuesta contra la intensidad (`dst_min`, `kp_max`) y
+   las features de respuesta contra la intensidad (`sym_h_min`, `ae_max`) y
    covariables sensibles al drag (altitud de apogeo, inclinación). Es el
    núcleo causal del proyecto.
 7. **Control narrativo** — para los satélites marcados, buscar en Gunter's
@@ -370,7 +399,7 @@ tormenta**:
 |---------|-------------|
 | `NORAD_CAT_ID` | objeto (de gp_history) |
 | `storm_id`, `storm_peak_utc` | el evento de tormenta OMNI |
-| `dst_min`, `kp_max` | intensidad de la tormenta |
+| `sym_h_min`, `ae_max` | intensidad de la tormenta (SYM-H mín / AE máx) |
 | `cme_activity_id` | CME padre de DONKI (o `None`) |
 | `window_start`, `window_end` | límites de la ventana de evento |
 | `delta_mean_motion`, `delta_periapsis` | respuesta orbital |
@@ -390,7 +419,7 @@ Caso de validación que todo el pipeline debe reproducir antes de confiar en
   catálogo descargado, **75 objetos muestran `DECAY_DATE` en febrero de
   2022**, incluidos payloads de Starlink — el cluster esperado.
 - **Chequeos**: la tormenta debe detectarse en el paso 1 de §3.2
-  (`dst_min`/`kp_max` extremos); DONKI debe atribuir un GST a una CME con
+  (`sym_h_min`/`ae_max` extremos); DONKI debe atribuir un GST a una CME con
   `isEarthDirected`; los objetos que decaen deben tener
   `decay_in_window = True`, Δ`MEAN_MOTION` alto y desorbitado días antes del
   decaimiento.
@@ -772,7 +801,7 @@ Cada carpeta de misión trae `channels/<param>.zip` (series por canal),
 | **UCS Satellite Database** | Estado operativo actual (Operational / Non-operational) | Foto de "vivo hoy", sin historial de fallas |
 
 La atribución de clima espacial viene de **DONKI (GST/SEP) + OMNI
-(Dst/Kp/protones) + eventos de decaimiento en Space-Track**; estas capas solo
+(SYM-H/AE/protones) + eventos de decaimiento en Space-Track**; estas capas solo
 responden "por qué dejó de funcionar este satélite específico".
 
 ### 5.3 Catálogos históricos candidatos (evaluados, no adoptados)
@@ -785,7 +814,7 @@ responden "por qué dejó de funcionar este satélite específico".
 
 DONKI/OMNI fueron elegidos como el núcleo porque DONKI agrega dirección 3D
 real, eventos SEP/GST y cadenas causales, y OMNI carga la serie continua de
-Dst/Kp/protones.
+SYM-H/AE/protones.
 
 ---
 
@@ -806,9 +835,9 @@ causará en la Tierra:
   `speed_3d`, `isEarthDirected`) y modelos de tránsito afinados contra los
   desfases históricos de llegada en OMNI (lanzamiento de CME → onset de
   Kp/Dst).
-- **Intensidad** — pronosticar buckets de `dst_min` / `kp_max` desde la
+- **Intensidad** — pronosticar buckets de `sym_h_min` / `ae_max` desde la
   energía de la CME y la respuesta histórica de OMNI, usando la misma
-  definición de tormenta que §3.2 (`Dst ≤ −50` o `Kp ≥ 5`).
+  definición de tormenta que §3.2 (`SYM_H ≤ −50` o `AE_INDEX_max ≥ 1000`).
 
 La serie OMNI es a la vez la señal de entrenamiento y el objetivo de
 verificación de estos pronósticos.
@@ -854,7 +883,8 @@ Herramientas candidatas: `plotly` (Python, scatter 3D + slider fácil) y/o
 
 1. ⚠️ Datos de Etapa 0 (`gp_history`) — **no está en disco**; re-descargar
    acotado (ver §2.2). Bloquea §3.
-2. ⏳ Datos de Etapas 1–2 (OMNI/DONKI) — colectores listos, ejecutar (§2.6).
+2. ✅ Datos de Etapa 1 (OMNI, 2012→) — descargados.
+   ⏳ Datos de Etapa 2 (DONKI) — colector listo, necesita `NASA_API_KEY` (§2.6).
    ✅ Etapa 3 (Gunter's) — crawleada, export tabular construido (sin
    clasificar).
 3. ⏳ Pipeline de §3 — ventanas de tormenta, SGP4, event study, validación
@@ -922,11 +952,12 @@ cme-sentinel/
 ├── README.es.md             # traducción al español del README (este archivo)
 ├── docs/
 │   ├── datos_gunter.md               # diccionario de datos de Gunter's (qué contiene cada artefacto)
+│   ├── datos_omni.md                 # diccionario de columnas de OMNI, regla de agregación, calidad
 │   └── proceso_extraccion_gunter.md  # crónica paso a paso de la extracción de Gunter's
 ├── requirements.txt          # dependencias de Python
 ├── scripts/
 │   ├── fetch_gp_history.py  # Etapa 0: catálogo orbital (falta en disco)
-│   ├── fetch_omni.py        # Etapa 1: OMNI horario (listo, sin ejecutar)
+│   ├── fetch_omni.py        # Etapa 1: OMNI horario (ejecutado, 2012→)
 │   ├── fetch_donki.py       # Etapa 2: eventos DONKI (listo, requiere NASA_API_KEY)
 │   ├── fetch_gunter.py      # Etapa 3a: crawl completo de Gunter's (ya ejecutado)
 ├── notebooks/
@@ -935,7 +966,7 @@ cme-sentinel/
 └── data/
     ├── .progress.json       # progreso de descargas (git-ignored)
     ├── gp_history/          # Etapa 0 ⚠️ falta (git-ignored)
-    ├── omni/                # Etapa 1 (git-ignored)
+    ├── omni/                # Etapa 1 ✅ 2012→2026 (git-ignored)
     ├── donki/               # Etapa 2 (git-ignored)
     └── gunter/              # Etapa 3 ✅ (git-ignored)
         ├── tables.parquet       # filas del directorio
