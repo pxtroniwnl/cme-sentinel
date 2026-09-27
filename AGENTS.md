@@ -60,6 +60,18 @@ DONKI/OMNI ni lo uses en el análisis causal.
   `gp_history`.
 - `notebooks/02_gunter_tabular.ipynb` — export tabular de Gunter's (1 fila
   por objeto, **sin clasificación** de causa; ya ejecutado).
+- `data/` — **symlink a `/mnt/windows/cme-sentinel-data`** (partición NTFS
+  `Windows-SSD`, UUID `E438D1CF38D1A0BA`). El catálogo orbital completo son
+  ~12 GB y no entra en la partición raíz de Linux, así que los datos
+  crudos viven en el disco de Windows y el repo solo los ve por el symlink.
+  Montaje en `/etc/fstab` con `defaults,nofail,x-systemd.automount,uid=1000,
+  gid=1000`: si Windows no está disponible el arranque no se rompe y `data/`
+  queda como symlink roto (fallo ruidoso, no escritura silenciosa).
+  Gotcha: `noacl` **no** es una opción válida de `ntfs3` (es de `ntfs-3g`);
+  el kernel responde `ntfs3: Unknown parameter 'noacl'`.
+  Gotcha: al editar `/etc/fstab` hay que usar `systemctl daemon-reload` y montar
+  con `systemctl start mnt-windows.mount`; `mount /mnt/windows` pasa las opciones
+  propias de systemd al kernel y falla con EINVAL.
 - `data/gp_history/year=YYYY/part-*.parquet` — catálogo orbital (git-ignored).
 - `data/gunter/` — páginas crudas (`pages/`, `meta/pages.parquet`),
   `tables.parquet`, `incidents.parquet` y el export tabular

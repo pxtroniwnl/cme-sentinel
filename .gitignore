@@ -1,4 +1,7 @@
 .env
+# `data/` is now a symlink to the Windows partition, and a trailing slash
+# would only match a real directory, so match the name itself.
+data
 data/
 .venv/
 __pycache__/

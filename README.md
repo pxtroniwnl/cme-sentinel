@@ -130,8 +130,11 @@ in §4).
 >   Cosmos-Iridium 2021, Starlink 2022) is far cheaper than the full archive.
 > - Needs `SPACE_TRACK_EMAIL` / `SPACE_TRACK_PASSWORD` in `.env`.
 > - Budget the disk **before** starting: the full archive is ~12 GB, which does
->   not fit on the Linux root partition. `data/` must be pointed at the
->   Windows partition for this to work (§2.6).
+>   not fit on the Linux root partition. This is already solved — `data/` is a
+>   symlink to `/mnt/windows/cme-sentinel-data` on the NTFS `Windows-SSD`
+>   partition, mounted via `/etc/fstab` with `nofail,x-systemd.automount` so a
+>   missing Windows volume degrades to a loud dangling symlink instead of a
+>   broken boot (§2.6).
 
 ### 2.3 Stage 1: OMNI
 

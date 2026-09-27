@@ -131,8 +131,11 @@ partes Parquet.
 >   archivo completo.
 > - Necesita `SPACE_TRACK_EMAIL` / `SPACE_TRACK_PASSWORD` en `.env`.
 > - Reservá el disco **antes** de arrancar: el archivo completo pesa ~12 GB y no
->   entra en la partición raíz de Linux. `data/` tiene que apuntar a la partición
->   de Windows para que esto entre (§2.6).
+>   entra en la partición raíz de Linux. Esto ya está resuelto — `data/` es un
+>   symlink a `/mnt/windows/cme-sentinel-data` en la partición NTFS
+>   `Windows-SSD`, montada por `/etc/fstab` con `nofail,x-systemd.automount`
+>   para que si el volumen de Windows no está disponible quede un symlink
+>   roto y ruidoso en vez de un arranque roto (§2.6).
 
 ### 2.3 Etapa 1: OMNI
 
