@@ -905,6 +905,7 @@ cme-sentinel/
 ├── README.md                # este proyecto en inglés (fuente de verdad)
 ├── README.es.md             # traducción al español del README (este archivo)
 ├── docs/
+│   ├── datos_gunter.md               # diccionario de datos de Gunter's (qué contiene cada artefacto)
 │   └── proceso_extraccion_gunter.md  # crónica paso a paso de la extracción de Gunter's
 ├── requirements.txt          # dependencias de Python
 ├── scripts/

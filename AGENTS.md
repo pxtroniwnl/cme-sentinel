@@ -46,6 +46,9 @@ DONKI/OMNI ni lo uses en el análisis causal.
   estructura; mantenela sincronizada si se edita el README.
 - `docs/proceso_extraccion_gunter.md` — crónica paso a paso de la extracción
   de Gunter's (crawl, dataset de fallas, export tabular).
+- `docs/datos_gunter.md` — diccionario de datos y estadísticas de los
+  artefactos en `data/gunter` (`tables`, `incidents`, `gunter_tabular`,
+  `meta/pages`, `pages/`).
 - `scripts/fetch_gp_history.py` — descargador del catálogo orbital; es el
   **patrón de estilo** que deben seguir los futuros descargadores.
 - `scripts/fetch_omni.py` — OMNI horario 1963+ vía HAPI (público, sin key).

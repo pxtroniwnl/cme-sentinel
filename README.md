@@ -877,6 +877,7 @@ cme-sentinel/
 ├── README.md                # this document (English, source of truth)
 ├── README.es.md             # Spanish translation of the README
 ├── docs/
+│   ├── datos_gunter.md               # Gunter's data dictionary & quality notes (extracted data)
 │   └── proceso_extraccion_gunter.md  # step-by-step account of the Gunter's extraction
 ├── requirements.txt          # Python dependencies
 ├── scripts/
