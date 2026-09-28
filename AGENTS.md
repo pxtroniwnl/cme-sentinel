@@ -28,7 +28,7 @@ Cadena física (el modelo mental de todo el proyecto):
 |---|---|---|
 | Space-Track `gp_history` | Efecto (órbita/decaimiento) | ⚠️ **NO en disco** (se borró para liberar espacio). Re-descargar **acotado** con `--start` |
 | OMNI (NASA GSFC) | Driver continuo + SYM-H/AE/protones | ✅ Descargado 2012-01-01 → 2026-09-03, 128.617 filas horarias, 20 MB (`scripts/fetch_omni.py`, HAPI `cdaweb.gsfc.nasa.gov/hapi`, dataset `OMNI_HRO_5MIN`). Diccionario: `docs/datos_omni.md` |
-| DONKI (NASA CCMC) | Eventos discretos (CME/GST/SEP/flares/HSS) | ✅ Script listo, **sin descargar** (`scripts/fetch_donki.py`; requiere `NASA_API_KEY`) |
+| DONKI (NASA CCMC) | Eventos discretos (CME/GST/SEP/flares/HSS) | ✅ Descargado 2012-01-01 → 2026-09-03, 7 endpoints, 24.610 eventos, 6,3 MB (`scripts/fetch_donki.py`; requiere `NASA_API_KEY`). Diccionario: `docs/datos_donki.md` |
 | Gunter's Space Page | Estado/falla por satélite — capa narrativa extra | ✅ Descargado (`data/gunter`), ver `fetch_gunter.py` |
 | ESA Anomaly Dataset | Benchmark de telemetría — **fuera de la correlación causal** | 📄 Solo documentado |
 
@@ -57,9 +57,14 @@ DONKI/OMNI ni lo uses en el análisis causal.
 - `scripts/fetch_donki.py` — eventos discretos DONKI, JSON flateado.
 - `scripts/fetch_gunter.py` — crawler completo de Gunter's (raw + tablas).
 - `notebooks/01_validate_and_explore.ipynb` — validación y exploración de
-  `gp_history`.
+  `gp_history`. **Roto**: los outputs son de un `data/` con el catálogo orbital
+  completo, que ya no está en disco. Re-ejecutar tras re-descargar.
+- `notebooks/03_omni_donki_explore.ipynb` — diccionario, validación cruzada
+  OMNI×DONKI y estimación del tiempo de llegada del shock (ya ejecutado).
 - `notebooks/02_gunter_tabular.ipynb` — export tabular de Gunter's (1 fila
   por objeto, **sin clasificación** de causa; ya ejecutado).
+- `docs/datos_donki.md` — diccionario por endpoint de `data/donki`, dirección
+  de la cadena causal, huecos reales y trampas de tipo.
 - `data/` — **symlink a `/mnt/windows/cme-sentinel-data`** (partición NTFS
   `Windows-SSD`, UUID `E438D1CF38D1A0BA`). El catálogo orbital completo son
   ~12 GB y no entra en la partición raíz de Linux, así que los datos
@@ -95,6 +100,7 @@ DONKI/OMNI ni lo uses en el análisis causal.
   probar). Sin key. Ya ejecutado para 2012→2026; para 1963+ extendé el
   `--start` (el resume por año saltea lo ya bajado).
 - DONKI: `python scripts/fetch_donki.py` (`--endpoints GST,SEP` para probar).
+  Ya ejecutado para 2012→2026 en los 7 endpoints; el resume saltea lo ya bajado.
   Requiere `NASA_API_KEY`.
 - Gunter's: `python scripts/fetch_gunter.py` (`--max-pages 100 --delay 2.0`
   para probar). Crawler por batches; resume-safe. Ya ejecutado (solo crawl
@@ -160,6 +166,30 @@ DONKI/OMNI ni lo uses en el análisis causal.
   (mínimos anuales de `SYM_H`) si se toca el dataset o el script.
 - Gotcha OMNI: la cobertura del servidor llega ~24 días antes de la fecha de
   consulta (parada en 2026-09-03). Re-correr el colector completa 2026.
+- Gotcha DONKI: la cadena causal va **`GST → CME`**, no al revés. Cada `GST`
+  lista en `linked_activity_ids` los eventos que lo causaron; el `CME` no
+  tiene back-reference. Buscar `gstID` dentro de `CME.linked_activity_ids`
+  da **cero** filas y parece "no hay dato causal" cuando es el endpoint
+  equivocado. Solo 138 de 9.951 CME están atribuidas a una tormenta.
+- Gotcha DONKI: las columnas-lista de Parquet llegan como **`numpy.ndarray`**,
+  no como `list`, así que `isinstance(x, list)` las descarta **en silencio**
+  y deja el mapa de relaciones vacío. Usar `hasattr(x, "__iter__")`.
+- Gotcha DONKI: **DONKI no tiene `isEarthDirected`**, ni como columna ni
+  dentro del JSON `cmeAnalyses`. La dirección a Tierra se deriva de la
+  geometría del cono (`latitude`/`longitude`/`halfAngle` en `CMEAnalysis`).
+  El README afirmaba lo contrario; ya corregido.
+- Gotcha DONKI: `SEP` 2018 y 2019 están en `.progress.json` como completadas
+  pero **no escribieron Parquet** (la API devuelve 0 eventos). Por eso hay
+  103 archivos y no 105. Re-correr no las recupera: hay que borrar la clave
+  de `completed` a mano.
+- Gotcha DONKI: las fechas son **strings ISO-8601 en UTC**, no timestamps;
+  convertir con `pd.to_datetime(..., utc=True, format="mixed")`.
+- Gotcha OMNI: **`BZ_GSM` se agrega con `AGG_MAX` en `scripts/fetch_omni.py:95`**
+  (y el comentario de `scripts/fetch_omni.py:44` lo justifica explícitamente),
+  pero para la eyección sur interesa el **mínimo**, no el máximo: la
+  reconexión ocurre con `BZ` más negativo. `BZ_GSM_max` representa el campo
+  *norte*, no el sur, así que no sirve para el sideways. Corregir el `agg`
+  a `min` y re-descargar antes de usar la dirección del campo IMF.
 - Gotcha: en los parquet de `gp_history`, `DECAY_DATE` activo es `""` (no
   `NaN`) → filtrar con `.astype(str).ne("")`.
 - Gotcha Gunter's: el sitio sirve **alias duplicados** `/doc_sdat/doc_sdat/<pag>.htm`
