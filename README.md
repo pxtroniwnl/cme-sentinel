@@ -84,7 +84,7 @@ year).
 flowchart LR
     A[Space-Track gp_history] -->|fetch_gp_history.py| P1[(gp_history/ year=YYYY ⚠️)]
     C[OMNI · NASA SPDF HAPI] -->|fetch_omni.py| P2[(omni/ 2012→2026 ✅)]
-    E[DONKI · NASA CCMC API] -->|fetch_donki.py| P3[(donki/ endpoint/year ⏳)]
+    E[DONKI · NASA CCMC API] -->|fetch_donki.py| P3[(donki/ endpoint/year ✅)]
     G[Gunter's Space Page · HTML] -->|fetch_gunter.py| P4[(gunter/ tables, incidents ✅)]
     P1 & P2 & P3 --> I[Align & build storm windows]
     I --> J[Event study + SGP4 position]
@@ -99,7 +99,7 @@ flowchart LR
 |---|--------|-------------------|-----------|----------|--------|
 | 0 | Space-Track `gp_history` | **Effect**: orbital state, drag, decay, re-entry | `fetch_gp_history.py` | `data/gp_history/year=YYYY/` | ⚠️ missing |
 | 1 | OMNI (NASA SPDF) | **Continuous driver**: solar wind + SYM-H/AE/protons | `fetch_omni.py` | `data/omni/year=YYYY/` | ✅ 2012→2026-09 |
-| 2 | DONKI (NASA CCMC) | **Event framework**: CME/GST/SEP/flares + causal chains | `fetch_donki.py` | `data/donki/<endpoint>/year=YYYY/` | ⏳ |
+| 2 | DONKI (NASA CCMC) | **Event framework**: CME/GST/SEP/flares + causal chains | `fetch_donki.py` | `data/donki/<endpoint>/year=YYYY/` | ✅ 2012→2026-09 |
 | 3 | Gunter's Space Page | **Narrative layer**: per-satellite status & failure cause | `fetch_gunter.py` (+ `02_gunter_tabular.ipynb`) | `data/gunter/{tables,incidents}.parquet` + raw pages + `gunter_tabular.parquet` | ✅ |
 
 ### 2.2 Stage 0: Space-Track gp_history
@@ -202,26 +202,40 @@ NASA_API_KEY=your_nasa_api_key_here
 
 **What it brings**: 1 row per **event** — the discrete causal framework
 (what happened and when). Endpoints fetched: `CME`, `CMEAnalysis`, `GST`,
-`FLR`, `SEP`, `IPS`, `HSS`. Records are JSON with nested arrays that the
-script flattens into columns (the arrays are also kept serialized as JSON,
-so nothing is lost):
+`FLR`, `SEP`, `IPS`, `HSS`, 2012→2026, **24,610 events** in 6.3 MB. Records are
+JSON with nested arrays that the script flattens into columns (the arrays are
+also kept serialized as JSON, so nothing is lost). Column-by-column reference
+and real null rates: [`docs/datos_donki.md`](docs/datos_donki.md).
 
-| activityID | startTime | sourceLocation | activeRegionNum | cmeAnalyses_speed_3d | cmeAnalyses_count | linked_activity_ids |
-|---|---|---|---|---|---|---|
-| 2022-02-01T17:00:00-CME-001 | 2022-02-01 17:00 | S24 | 12955 | 708 | 1 | [] |
+| activityID | startTime | sourceLocation | activeRegionNum | cmeAnalyses_count | linked_activity_ids |
+|---|---|---|---|---|---|
+| 2022-03-10T19:23:00-CME-001 | 2022-03-10T19:23Z | N12W12 | 12962 | 1 | — |
 
-| gstID | startTime | kpIndex | all_kp_max | linked_activity_ids |
-|---|---|---|---|---|
-| 2022-02-03T22:00:00-GST-001 | 2022-02-03 22:00 | 6.0 | 6.0 | [2022-02-01T17:00:00-CME-001] |
+| gstID | startTime | all_kp_max | linked_activity_ids |
+|---|---|---|---|
+| 2022-03-13T12:00:00-GST-001 | 2022-03-13T12:00Z | 6.0 | [2022-03-10T19:23:00-CME-001] |
 
-*(Illustrative rows; `linked_activity_ids` chains CME → GST/SEP for
-attribution.)*
+*(Real rows from 2022. `CME` has **no** speed column: the geometry and speed live
+in `CMEAnalysis`, joined on `associatedCMEID` — that analysis reports
+`speed=677 km/s`, `halfAngle=61°`, axis at `lat=16°, lon=10°`.)*
 
-**Why this source**: DONKI adds what OMNI cannot — CME catalogs with **3D
-direction** (`cmeAnalyses[].speed_3d`, `isEarthDirected`), geomagnetic
-storm declarations, SEP/flare events, and the **`linkedEvents` cause→effect
-chains**, timestamped in real UTC. It is the **causal core**: it anchors OUR
+**The causal chain runs `GST → CME`, not the other way around.** Each `GST`
+lists the events that caused it in `linked_activity_ids`; the `CME` row has no
+back-reference to a storm. Only **138 of 9,951 CMEs** are attributed to a storm,
+covering 94 of 186 storms. The direction matters: joining `GST` IDs against
+`CME.linked_activity_ids` returns zero rows and looks like "no causal data"
+when it is really the wrong endpoint.
+
+**Why this source**: DONKI adds what OMNI cannot — the **discrete event
+catalogue** with a **causal attribution** already made by NASA, plus the CME 3D
+geometry (`latitude`, `longitude`, `halfAngle`, `speed` in `CMEAnalysis`) and
+the geomagnetic storm declarations. It is the **causal core**: it anchors OUR
 definition of "a storm happened because of a CME".
+
+> **No `isEarthDirected` flag.** Earlier revisions of this README claimed
+> DONKI provides one. It does not — neither as a column nor inside the
+> `cmeAnalyses` JSON. Earth-directedness has to be *derived* from the cone
+> geometry against the spacecraft position. See [`docs/datos_donki.md`](docs/datos_donki.md) §5.
 
 ### 2.5 Stage 3: Gunter's
 
@@ -298,7 +312,7 @@ python scripts/fetch_gp_history.py --start 2000-01-01
 # Stage 1: OMNI hourly, 2012 → today (extend --start for 1963+)
 python scripts/fetch_omni.py --start 2012-01-01
 
-# Stage 2: DONKI events, 2010 → today (needs NASA_API_KEY)
+# Stage 2: DONKI events, 2012 → today (needs NASA_API_KEY; already run)
 python scripts/fetch_donki.py
 
 # Stage 3a: Gunter's full-site crawl (resume-safe)
@@ -306,15 +320,19 @@ python scripts/fetch_gunter.py
 
 # Stage 3b: build the tabular export (note: already run)
 jupyter nbconvert --to notebook --execute --inplace notebooks/02_gunter_tabular.ipynb
+
+# Explore + document OMNI and DONKI (already run; re-runs in place)
+jupyter nbconvert --to notebook --execute --inplace notebooks/03_omni_donki_explore.ipynb
 ```
 
 | Stage | Command | Needs | Output | Expected volume | Expected runtime |
 |-------|---------|-------|--------|-----------------|------------------|
 | 0 | `fetch_gp_history.py` | Space-Track creds | `data/gp_history/` | ~12 GB (full) | ⚠️ to redo, scoped |
 | 1 | `fetch_omni.py` | none | `data/omni/` | **20 MB** | **done** (5 min, 15 ñ 2012–2026) |
-| 2 | `fetch_donki.py` | `NASA_API_KEY` | `data/donki/` | a few MB | minutes |
+| 2 | `fetch_donki.py` | `NASA_API_KEY` | `data/donki/` | 6.3 MB | **done** (7 endpoints, 105 windows 2012–2026) |
 | 3a | `fetch_gunter.py` | none | `data/gunter/` (raw pages + tables/incidents) | ~230 MB | already done (~7.8k pages; ~13k URLs discovered, the rest alias) |
 | 3b | `02_gunter_tabular.ipynb` (nbconvert) | reads 3a output | `data/gunter/gunter_tabular.parquet` (+ CSV) | 8 MB / 69 MB | minutes |
+| 3c | `03_omni_donki_explore.ipynb` (nbconvert) | reads 1 + 2 output | notebook with embedded outputs | 320 KB | ~2 min |
 
 Propagated **caveats** (kept in the scripts): the OMNI HAPI host that works
 is `cdaweb.gsfc.nasa.gov/hapi` (`spdf.gsfc.nasa.gov/hapi` returns 403); OMNI
@@ -335,7 +353,7 @@ procedure precise and will be tuned during the analysis phase.
 | Source | Granularity | Key column(s) | What aligns it |
 |--------|-------------|---------------|----------------|
 | OMNI | 1 h | `EPOCH` | the **master time axis** |
-| DONKI | event | `startTime`, `endTime`, `linked_activity_ids` | events on the time axis + CME→GST attribution |
+| DONKI | event | `startTime`, `endTime`, `linked_activity_ids` | events on the time axis + GST→CME attribution |
 | gp_history | per object per epoch | `EPOCH`, `NORAD_CAT_ID`, `DECAY_DATE` | object state at any time |
 | Gunter's | per launch | `cospar`, `date` | map to object via COSPAR/match + launch date (prose) |
 
@@ -354,11 +372,14 @@ date). ESA's DISCOSweb could later provide an exact object bridge.
    hour), `sym_h_min`, `ae_max`.
    *(There is no `Dst`/`Kp` in OMNI — see §2.3. The original `Dst ≤ −50` **or**
    `Kp ≥ 5` rule is replaced by the equivalent SYM-H/AE thresholds.)*
-2. **Fold in DONKI attribution** — match each OMNI storm to a DONKI GST by
-   `startTime` within **±24 h**; then follow the GST's
-   `linked_activity_ids` back to the **parent CME(s)** (3D cone: speed,
-   direction, `isEarthDirected`). SEP events (electronics pathway) are
-   matched the same way.
+2. **Fold in DONKI attribution** — **prefer DONKI's own `linkedEvents`**: for
+   each OMNI storm, find the `GST` and read the parent CME(s) out of
+   `GST.linked_activity_ids` (3D cone: `speed`, `halfAngle`, `latitude`,
+   `longitude` from `CMEAnalysis`). Use a `startTime` match within ±24 h only as
+   a **fallback** for storms DONKI left unlinked. This is not a stylistic
+   preference — measured on 15 years, the temporal-only attribution is
+   measurably worse (§4 of `notebooks/03_omni_donki_explore.ipynb`). SEP events
+   (electronics pathway) are matched the same way.
 3. **Per-object orbital windows** — for every `NORAD_CAT_ID` with TLEs
    around the storm, define the **event window** `[storm_start − 7 d,
    storm_end + 7 d]` and the **baseline** `[storm_start − 30 d,
@@ -392,7 +413,7 @@ storm**:
 | `NORAD_CAT_ID` | object (from gp_history) |
 | `storm_id`, `storm_peak_utc` | the OMNI storm event |
 | `sym_h_min`, `ae_max` | storm intensity (SYM-H min / AE max) |
-| `cme_activity_id` | parent CME from DONKI (or `None`) |
+| `cme_activity_id` | parent CME from `GST.linked_activity_ids` (or `None`) |
 | `window_start`, `window_end` | event window bounds |
 | `delta_mean_motion`, `delta_periapsis` | orbital response |
 | `decay_in_window` (bool), `decay_utc` | re-entry in window |
@@ -410,7 +431,9 @@ Validation case that the whole pipeline must reproduce before it is trusted:
   In the downloaded catalog, **75 objects show `DECAY_DATE` in
   February 2022**, including Starlink payloads — the expected cluster.
 - **Checks**: the storm must be detected by §3.2 step 1 (`sym_h_min`/`ae_max`
-  extreme); DONKI must attribute a GST to a CME with `isEarthDirected`;
+  extreme); DONKI must attribute the GST to a CME via `linked_activity_ids`
+  whose cone axis points at Earth (derived from `latitude`/`longitude`, since
+  DONKI has no `isEarthDirected` flag);
   the decaying objects must have `decay_in_window = True`, high
   Δ`MEAN_MOTION`, starting de-orbiting days before decay.
 - **Caveat**: Starlink descends operationally too; the event study needs
@@ -813,9 +836,10 @@ Using a CME as soon as it is observed (DONKI CME/CMEAnalysis records; in
 operation, also coronagraph/L1 imagery), predict the storm it will cause at
 Earth:
 
-- **Arrival time** — from CME speed/direction (3D cone: `speed_3d`,
-  `isEarthDirected`) and transit models tuned against the historical OMNI
-  arrival lags (CME launch → storm onset, i.e. first hour `SYM_H` drops).
+- **Arrival time** — from the CME 3D cone (`speed`, `halfAngle`, `latitude`,
+  `longitude` in `CMEAnalysis`; DONKI has **no** `isEarthDirected` flag, so
+  Earth-directedness is derived) and transit models tuned against the historical
+  OMNI arrival lags (CME launch → storm onset, i.e. first hour `SYM_H` drops).
 - **Strength** — forecast `sym_h_min` / `ae_max` buckets from the CME's energy
   and the historical OMNI response, using the same storm definition as §3.2
   (`SYM_H ≤ −50` or `AE_INDEX_max ≥ 1000`).
@@ -862,7 +886,7 @@ Candidate tooling: `plotly` (Python, easy 3D scatter + slider) and/or
 1. ⚠️ Stage 0 data (`gp_history`) — **not on disk**; re-fetch scoped
    (see §2.2). Blocks §3.
 2. ✅ Stage 1 data (OMNI, 2012→) — downloaded.
-   ⏳ Stage 2 data (DONKI) — collector ready, needs `NASA_API_KEY` (§2.6).
+   ✅ Stage 2 data (DONKI, 2012→) — 7 endpoints downloaded, 24.610 events.
    ✅ Stage 3 (Gunter's) — crawled, tabular export built (unclassified).
 3. ⏳ §3 pipeline — storm windows, SGP4, event study, Starlink validation.
 4. 🚧 §6.1–6.2 — train predictors on the event-study features.
@@ -927,21 +951,23 @@ cme-sentinel/
 ├── docs/
 │   ├── datos_gunter.md               # Gunter's data dictionary & quality notes (extracted data)
 │   ├── datos_omni.md               # OMNI column dictionary, aggregation rule, quality notes
+│   ├── datos_donki.md              # DONKI endpoint dictionaries, causal chain, gaps
 │   └── proceso_extraccion_gunter.md  # step-by-step account of the Gunter's extraction
 ├── requirements.txt          # Python dependencies
 ├── scripts/
 │   ├── fetch_gp_history.py  # Stage 0: orbital catalog (missing on disk)
 │   ├── fetch_omni.py        # Stage 1: OMNI hourly solar wind & indices (run, 2012→)
-│   ├── fetch_donki.py       # Stage 2: DONKI events (ready, needs NASA_API_KEY)
+│   ├── fetch_donki.py       # Stage 2: DONKI events (run, 7 endpoints, 2012→)
 │   ├── fetch_gunter.py      # Stage 3a: Gunter's full-site crawl (already run)
 ├── notebooks/
 │   ├── 01_validate_and_explore.ipynb  # catalog validation & exploration
-│   └── 02_gunter_tabular.ipynb        # Gunter's wide tabular export (run)
+│   ├── 02_gunter_tabular.ipynb        # Gunter's wide tabular export (run)
+│   └── 03_omni_donki_explore.ipynb    # OMNI+DONKI dictionary & exploration (run)
 └── data/
     ├── .progress.json       # download progress (git-ignored)
     ├── gp_history/          # Stage 0 ⚠️ missing (git-ignored)
     ├── omni/                # Stage 1 ✅ 2012→2026 (git-ignored)
-    ├── donki/               # Stage 2 (git-ignored)
+    ├── donki/               # Stage 2 ✅ 7 endpoints, 2012→2026 (git-ignored)
     └── gunter/              # Stage 3 ✅ (git-ignored)
         ├── tables.parquet       # directory index rows
         ├── incidents.parquet    # comsat_failures narratives

@@ -215,7 +215,7 @@ horarias 2012–2026; nulos = centinelas de fill más gaps reales de L1.
 
 | Columna | Tipo | Rango | Nulos | Lectura |
 |---|---|---|---|---|
-| `EPOCH` | datetime64[ns, UTC] | 2012-01-01 → 2026-09-03 | 0% | Hora UTC del sample horario. Clave temporal. |
+| `EPOCH` | datetime64[µs, UTC] | 2012-01-01 → 2026-09-03 | 0% | Hora UTC del sample horario. Clave temporal. (La resolución es µs, no ns: pandas 3.x resuelve `to_datetime` sobre strings a microsegundos.) |
 | `SYM_H` | float64 | −497 … 69 nT | 0% | **Índice de corriente en anillo (minuto horario).** El driver de tormenta del proyecto. Sustituye a `Dst`. |
 | `SYM_D` | float64 | −84 … 21 nT | 0% | Componente Y del índice de anillo. |
 | `AE_INDEX_max` | float64 | 6 … 3997 nT | 0.1% | Índice auroral, máximo horario. Rol tipo-Kp ("qué tan alterada"). |
@@ -228,6 +228,7 @@ horarias 2012–2026; nulos = centinelas de fill más gaps reales de L1.
 | `BY_GSM` | float64 | −33 … 68 nT | 3.1% | IMF transversa en GSM. |
 | `F` | float64 | 0.49 … 69.1 nT | 3.1% | Módulo del IMF. |
 | `RMS_SD_B` | float64 | 0 … 4.26 nT | 3.1% | Dispersión del campo. |
+| `RMS_SD_fld_vec` | float64 | 0 … 12.5 nT | 3.1% | Dispersión RMS del **vector** de campo. Mayor que `RMS_SD_B` (componentes). |
 | `flow_speed` | float64 | 250 … 1075 km/s | 3.2% | Velocidad del viento solar (media horaria). |
 | `Vx/Vy/Vz` | float64 | −1074…−250 / ±306 / ±181 km/s | 3.2% | Componentes del viento solar. Negativas en X: flujo antisolar. |
 | `proton_density` | float64 | 0.08 … 70.9 cm⁻³ | 3.2% | Densidad de protones. |
